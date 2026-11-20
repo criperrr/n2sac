@@ -1,5 +1,37 @@
 use std::future::Future;
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+const REFRESH_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
+const REFRESH_MAX_REQUESTS: usize = 10; // 10 requests per 5-minute sliding window
+
+fn check_refresh_rate_limit(account_id: i64) -> Result<(), u64> {
+    static LIMITER: OnceLock<Mutex<HashMap<i64, VecDeque<Instant>>>> = OnceLock::new();
+    let map = LIMITER.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut guard) = map.lock() else {
+        return Ok(());
+    };
+    let now = Instant::now();
+    let queue = guard.entry(account_id).or_default();
+    while let Some(&front) = queue.front() {
+        if now.duration_since(front) >= REFRESH_WINDOW {
+            queue.pop_front();
+        } else {
+            break;
+        }
+    }
+    if queue.len() >= REFRESH_MAX_REQUESTS {
+        let oldest = queue.front().copied().unwrap_or(now);
+        let retry_secs = REFRESH_WINDOW
+            .saturating_sub(now.duration_since(oldest))
+            .as_secs()
+            .max(1);
+        return Err(retry_secs);
+    }
+    queue.push_back(now);
+    Ok(())
+}
 
 use axum::extract::{Path, RawQuery, State};
 use axum::http::HeaderMap;
@@ -186,6 +218,16 @@ pub async fn get_boletim(
     let query_filter = QueryFilter::from_query_pairs(filter_pairs)?;
 
     let cached = if target_query.refresh {
+        if let Err(retry_secs) = check_refresh_rate_limit(target.account_id) {
+            let msg = format!(
+                "Limite de 10 atualizações a cada 5 minutos atingido. Tente novamente em {retry_secs}s."
+            );
+            return Err(ServerError::with_user_message(
+                nsac_core::error::ErrorCode::InvalidParams,
+                msg.clone(),
+                msg,
+            ));
+        }
         fetch_and_persist_boletim(&state, target.account_id).await?
     } else if let Some(hit) = state.caches.boletim.get(&target.account_id).await {
         hit

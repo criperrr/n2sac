@@ -29,7 +29,7 @@ import {
   type AppTabId,
 } from './components/ExpressiveNavigation';
 import { RankingConsentModal } from './components/RankingConsentModal';
-import { AdaptiveStudioScreen } from './screens/AdaptiveStudioScreen';
+import { ProfileScreen } from './screens/ProfileScreen';
 import { BoletimScreen } from './screens/BoletimScreen';
 import { FrequenciaScreen } from './screens/FrequenciaScreen';
 import { LoginScreen } from './screens/LoginScreen';
@@ -304,7 +304,11 @@ export const App: React.FC = () => {
           />
         )}
         {activeTab === 'studio' && (
-          <AdaptiveStudioScreen detectedClassCode={effectiveClassCode} />
+          <ProfileScreen
+            token={session.token}
+            accountProfile={accountProfile}
+            detectedClassCode={effectiveClassCode}
+          />
         )}
       </div>
       <RankingConsentModal

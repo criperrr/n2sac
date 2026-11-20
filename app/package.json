@@ -1,7 +1,7 @@
 {
   "name": "nsac-aperture-app",
   "private": true,
-  "version": "2.0.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "NSAC Online (CTI/UNESP Bauru) Material 3 Expressive Cross-Platform Application inspired by XDanfr/Aperture and xLexip/Adaptive-Theme",
   "scripts": {
@@ -13,7 +13,11 @@
   },
   "dependencies": {
     "@capacitor/android": "^7.0.1",
+    "@capacitor/app": "^7.1.2",
+    "@capacitor/background-runner": "^2.3.1",
     "@capacitor/core": "^7.0.1",
+    "@capacitor/local-notifications": "^7.0.7",
+    "@capacitor/push-notifications": "^7.0.7",
     "@material/material-color-utilities": "^0.3.0",
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",

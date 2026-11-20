@@ -1,9 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
+import { App as CapacitorApp } from '@capacitor/app';
+import { Capacitor } from '@capacitor/core';
 import App from './App';
 import { ThemeProvider } from './theme/ThemeContext';
 import { TelemetryErrorBoundary } from './components/TelemetryErrorBoundary';
 import { TelemetryConsentModal } from './components/TelemetryConsentModal';
+import { UpdateAvailableDialog } from './components/UpdateAvailableDialog';
 import {
   getTelemetryConsent,
   setTelemetryConsent,
@@ -11,8 +14,9 @@ import {
   type TelemetryConsentState,
 } from './telemetry/telemetryEngine';
 import {
-  checkGitHubNativeRelease,
-  checkSilentServerOta,
+  checkAllUpdates,
+  initializeUpdateNotifications,
+  syncBackgroundUpdateState,
   type NativeUpdateInfo,
 } from './updater/autoUpdater';
 import './index.css';
@@ -20,6 +24,21 @@ import './index.css';
 const TelemetryBootstrap: React.FC = () => {
   const [consent, setConsent] = useState<TelemetryConsentState>(() => getTelemetryConsent());
   const [nativeUpdate, setNativeUpdate] = useState<NativeUpdateInfo | null>(null);
+  const updateCheckInFlight = useRef(false);
+  const lastUpdateCheckAt = useRef(0);
+
+  const checkForUpdates = useCallback(async () => {
+    const now = Date.now();
+    if (updateCheckInFlight.current || now - lastUpdateCheckAt.current < 3000) return;
+    updateCheckInFlight.current = true;
+    lastUpdateCheckAt.current = now;
+    try {
+      setNativeUpdate(await checkAllUpdates());
+      await syncBackgroundUpdateState();
+    } finally {
+      updateCheckInFlight.current = false;
+    }
+  }, []);
 
   useEffect(() => {
     if (consent === 'granted') {
@@ -28,19 +47,55 @@ const TelemetryBootstrap: React.FC = () => {
   }, [consent]);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const reloaded = await checkSilentServerOta();
-      if (reloaded || cancelled) return;
-      const ghUpdate = await checkGitHubNativeRelease();
-      if (!cancelled && ghUpdate) {
-        setNativeUpdate(ghUpdate);
-      }
-    })();
+    const forceWebViewRepaint = () => {
+      if (document.visibilityState === 'hidden') return;
+      const root = document.documentElement;
+      root.style.transform = 'translateZ(0)';
+      window.requestAnimationFrame(() => {
+        root.style.transform = '';
+      });
+    };
+    document.addEventListener('visibilitychange', forceWebViewRepaint);
+    window.addEventListener('focus', forceWebViewRepaint);
+    window.addEventListener('pageshow', forceWebViewRepaint);
     return () => {
-      cancelled = true;
+      document.removeEventListener('visibilitychange', forceWebViewRepaint);
+      window.removeEventListener('focus', forceWebViewRepaint);
+      window.removeEventListener('pageshow', forceWebViewRepaint);
     };
   }, []);
+
+  useEffect(() => {
+    void initializeUpdateNotifications();
+    void checkForUpdates();
+    let disposed = false;
+    let appStateListener: { remove: () => Promise<void> } | undefined;
+
+    const onResume = () => {
+      if (document.visibilityState === 'visible') void checkForUpdates();
+    };
+    const onAppStateChange = ({ isActive }: { isActive: boolean }) => {
+      if (isActive) void checkForUpdates();
+    };
+
+    document.addEventListener('visibilitychange', onResume);
+    window.addEventListener('pageshow', onResume);
+    window.addEventListener('focus', onResume);
+    if (Capacitor.isNativePlatform()) {
+      void CapacitorApp.addListener('appStateChange', onAppStateChange).then((handle) => {
+        if (disposed) void handle.remove();
+        else appStateListener = handle;
+      });
+    }
+
+    return () => {
+      disposed = true;
+      document.removeEventListener('visibilitychange', onResume);
+      window.removeEventListener('pageshow', onResume);
+      window.removeEventListener('focus', onResume);
+      if (appStateListener) void appStateListener.remove();
+    };
+  }, [checkForUpdates]);
 
   return (
     <>
@@ -54,60 +109,7 @@ const TelemetryBootstrap: React.FC = () => {
         />
       )}
       {nativeUpdate && (
-        <div
-          style={{
-            position: 'fixed',
-            bottom: 84,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 9998,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            padding: '10px 14px',
-            borderRadius: 999,
-            backgroundColor: '#111827',
-            color: '#F9FAFB',
-            border: '1px solid rgba(255,255,255,0.16)',
-            boxShadow: '0 12px 32px rgba(0,0,0,0.45)',
-            fontSize: '0.8rem',
-            fontWeight: 600,
-            maxWidth: '92vw',
-          }}
-        >
-          <span>Nova versão {nativeUpdate.version} disponível</span>
-          <a
-            href={nativeUpdate.downloadUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{
-              padding: '5px 11px',
-              borderRadius: 999,
-              backgroundColor: '#10A37F',
-              color: '#FFFFFF',
-              textDecoration: 'none',
-              fontWeight: 700,
-              whiteSpace: 'nowrap',
-            }}
-          >
-            Atualizar
-          </a>
-          <button
-            type="button"
-            onClick={() => setNativeUpdate(null)}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: '#9CA3AF',
-              cursor: 'pointer',
-              fontSize: '0.9rem',
-              padding: '0 4px',
-            }}
-            aria-label="Fechar aviso"
-          >
-            ✕
-          </button>
-        </div>
+        <UpdateAvailableDialog update={nativeUpdate} onDismiss={() => setNativeUpdate(null)} />
       )}
     </>
   );

@@ -106,7 +106,20 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const transitionTimersRef = useRef<number[]>([]);
 
   const [systemDynamicColor, setSystemDynamicColor] =
-    useState<AndroidDynamicColorPayload | null>(() => probeSystemDynamicColor());
+    useState<AndroidDynamicColorPayload | null>(() => {
+      const live = probeSystemDynamicColor();
+      if (live) return live;
+      try {
+        const cached = localStorage.getItem('n2sac_last_android_monet_v1');
+        if (cached) {
+          const parsed = JSON.parse(cached) as AndroidDynamicColorPayload;
+          if (parsed?.seedHex) return parsed;
+        }
+      } catch {
+        // ignore
+      }
+      return null;
+    });
 
   const [osPrefersDark, setOsPrefersDark] = useState<boolean>(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true;
@@ -116,12 +129,31 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [hardwareLux, setHardwareLux] = useState<number | null>(null);
   const [hasHardwareLightSensor, setHasHardwareLightSensor] = useState(false);
 
+  const persistAndSetDynamicColor = useCallback((payload: AndroidDynamicColorPayload) => {
+    setSystemDynamicColor(payload);
+    try {
+      localStorage.setItem('n2sac_last_android_monet_v1', JSON.stringify(payload));
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const refreshSystemDynamicColor = useCallback(() => {
     const detected = probeSystemDynamicColor();
     if (detected) {
-      setSystemDynamicColor(detected);
+      persistAndSetDynamicColor(detected);
+      return;
     }
-  }, []);
+    try {
+      const cached = localStorage.getItem('n2sac_last_android_monet_v1');
+      if (cached) {
+        const parsed = JSON.parse(cached) as AndroidDynamicColorPayload;
+        if (parsed?.seedHex) setSystemDynamicColor(parsed);
+      }
+    } catch {
+      // ignore
+    }
+  }, [persistAndSetDynamicColor]);
 
   useEffect(() => {
     refreshSystemDynamicColor();
@@ -132,12 +164,12 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (typeof detail === 'string') {
         const hex = normalizeHexColor(detail);
         if (hex) {
-          setSystemDynamicColor({ seedHex: hex, source: 'android-aosp' });
+          persistAndSetDynamicColor({ seedHex: hex, source: 'android-aosp' });
         }
       } else if (detail && typeof detail === 'object' && detail.seedHex) {
         const hex = normalizeHexColor(detail.seedHex);
         if (hex) {
-          setSystemDynamicColor({
+          persistAndSetDynamicColor({
             seedHex: hex,
             secondaryHex: normalizeHexColor(detail.secondaryHex) ?? undefined,
             tertiaryHex: normalizeHexColor(detail.tertiaryHex) ?? undefined,

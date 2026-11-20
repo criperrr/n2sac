@@ -1,8 +1,12 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { PeerComparisonContent } from '../components/PeerComparisonPanel';
+import { ExpressiveModal, ModalHeader, ModalIconButton } from '../components/expressive/ExpressiveModal';
 import {
+  ArrowLeft,
   Trophy,
   Users,
   EyeOff,
+  Maximize2,
   Swords,
   Search,
   ShieldCheck,
@@ -35,10 +39,13 @@ export const RankingScreen: React.FC<{
   const [subjectSearch, setSubjectSearch] = useState('');
   const [selectedPeerId, setSelectedPeerId] = useState<number | null>(null);
   const [data, setData] = useState<ComparisonSummaryResponse | null>(null);
+  const [comparisonExpanded, setComparisonExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
+  const latestRequest = useRef(0);
   const [savingPrefs, setSavingPrefs] = useState(false);
 
   const loadLeaderboard = useCallback(async () => {
+    const requestId = ++latestRequest.current;
     setLoading(true);
     try {
       const res = await fetchCompareLeaderboard(token, {
@@ -47,12 +54,13 @@ export const RankingScreen: React.FC<{
         subject: subjectSearch.trim() || undefined,
         peerId: selectedPeerId,
       });
+      if (requestId !== latestRequest.current) return;
       setData(res);
       onPreferencesUpdated(res.my_preferences);
     } catch {
       // keep previous state
     } finally {
-      setLoading(false);
+      if (requestId === latestRequest.current) setLoading(false);
     }
   }, [token, scope, bimester, subjectSearch, selectedPeerId, onPreferencesUpdated]);
 
@@ -91,6 +99,67 @@ export const RankingScreen: React.FC<{
       setSavingPrefs(false);
     }
   };
+
+  const comparison =
+    data?.peer_comparison && data.peer_comparison.peer_entry.account_id === selectedPeerId
+      ? data.peer_comparison
+      : null;
+  const selectedEntry =
+    comparison?.peer_entry ?? data?.leaderboard.find((e) => e.account_id === selectedPeerId) ?? null;
+  const comparisonEyebrow = data
+    ? `${data.bimester ? `${data.bimester}º Bimestre` : 'Ano todo'} • ${data.school_year}${
+        selectedEntry ? ` • ${selectedEntry.class_code}` : ''
+      }`
+    : 'Comparação';
+  const comparisonTitle = `Você vs ${selectedEntry?.display_label ?? 'colega'}`;
+
+  const closeComparison = useCallback(() => {
+    setComparisonExpanded(false);
+    setSelectedPeerId(null);
+  }, []);
+
+  const pageRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (comparisonExpanded) pageRef.current?.scrollIntoView({ block: 'start' });
+  }, [comparisonExpanded]);
+
+  const comparisonBody = loading && !comparison ? (
+    <ComparisonSkeleton />
+  ) : comparison ? (
+    <PeerComparisonContent comparison={comparison} wide={comparisonExpanded} />
+  ) : (
+    <div style={{ marginTop: 18, color: tokens.onSurfaceVariant, fontSize: '0.86rem' }}>
+      Não foi possível carregar a comparação agora. Tente novamente em instantes.
+    </div>
+  );
+
+  // Full-screen comparison lives inside the content area, so the navigation drawer stays visible.
+  if (comparisonExpanded && selectedPeerId !== null) {
+    return (
+      <section
+        ref={pageRef}
+        className="m3-page-transition"
+        style={{
+          borderRadius: isMaterialYou ? 32 : 16,
+          padding: isMaterialYou ? '22px 22px 26px' : '24px 26px',
+          backgroundColor: isMaterialYou ? tokens.surfaceContainerLow : tokens.background,
+          border: `1px solid ${tokens.outlineVariant}`,
+        }}
+      >
+        <ModalHeader
+          icon={<Swords size={21} />}
+          eyebrow={comparisonEyebrow}
+          title={comparisonTitle}
+          actions={
+            <ModalIconButton label="Voltar ao ranking" onClick={closeComparison}>
+              <ArrowLeft size={18} />
+            </ModalIconButton>
+          }
+        />
+        {comparisonBody}
+      </section>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: isMaterialYou ? 18 : 16 }}>
@@ -314,97 +383,27 @@ export const RankingScreen: React.FC<{
         </div>
       </section>
 
-      {/* 2. HEAD-TO-HEAD PEER COMPARISON (When user clicks a classmate) */}
-      {data?.peer_comparison && (
-        <section
-          style={{
-            borderRadius: isMaterialYou ? 28 : 16,
-            padding: '20px 22px',
-            backgroundColor: tokens.surfaceContainerLow,
-            border: `1.5px solid ${tokens.primary}`,
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <Swords size={20} color={tokens.primary} />
-              <div>
-                <div style={{ fontWeight: 700, fontSize: '1rem' }}>
-                  Comparação Direta: Você vs {data.peer_comparison.peer_entry.display_label}
-                </div>
-                <div style={{ fontSize: '0.78rem', color: tokens.onSurfaceVariant }}>
-                  Vitórias: <strong style={{ color: tokens.gradeSuccess }}>{data.peer_comparison.my_wins}</strong> •
-                  Empates: <strong>{data.peer_comparison.ties}</strong> •
-                  Atrás: <strong style={{ color: tokens.error }}>{data.peer_comparison.peer_wins}</strong>
-                </div>
-              </div>
-            </div>
-            <EnhancedMorphButton
-              size="sm"
-              variant="outlined"
-              icon={<X size={14} />}
-              onClick={() => setSelectedPeerId(null)}
-            >
-              Fechar
-            </EnhancedMorphButton>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 8 }}>
-            {data.peer_comparison.subjects.map((row) => {
-              const diff = row.delta_me_vs_peer;
-              return (
-                <div
-                  key={row.subject_name}
-                  style={{
-                    padding: '10px 12px',
-                    borderRadius: isMaterialYou ? 16 : 10,
-                    backgroundColor: tokens.surfaceContainer,
-                    border: `1px solid ${tokens.outlineVariant}`,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: 8,
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontWeight: 600,
-                        fontSize: '0.84rem',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {row.subject_name}
-                    </div>
-                    <div style={{ fontSize: '0.74rem', color: tokens.onSurfaceVariant, marginTop: 2 }}>
-                      Você: <strong>{row.my_average !== null ? row.my_average.toFixed(1) : '—'}</strong> •{' '}
-                      Colega: <strong>{row.peer_average !== null ? row.peer_average.toFixed(1) : '—'}</strong>
-                    </div>
-                  </div>
-                  {diff !== null && (
-                    <span
-                      style={{
-                        padding: '3px 8px',
-                        borderRadius: isMaterialYou ? 999 : 6,
-                        fontSize: '0.75rem',
-                        fontWeight: 700,
-                        backgroundColor:
-                          diff >= 0 ? tokens.gradeSuccessContainer : tokens.errorContainer,
-                        color:
-                          diff >= 0 ? tokens.onGradeSuccessContainer : tokens.onErrorContainer,
-                        flexShrink: 0,
-                      }}
-                    >
-                      {diff >= 0 ? '+' : ''}
-                      {diff.toFixed(1)}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </section>
+      {selectedPeerId !== null && (
+        <ExpressiveModal ariaLabel="Comparação entre alunos" onClose={closeComparison}>
+          {(close) => (
+            <>
+              <ModalHeader
+                icon={<Swords size={21} />}
+                eyebrow={comparisonEyebrow}
+                title={comparisonTitle}
+                onClose={() => close()}
+                actions={
+                  comparison && (
+                    <ModalIconButton label="Tela cheia" onClick={() => close(() => setComparisonExpanded(true))}>
+                      <Maximize2 size={17} />
+                    </ModalIconButton>
+                  )
+                }
+              />
+              {comparisonBody}
+            </>
+          )}
+        </ExpressiveModal>
       )}
 
       {/* 3. LEADERBOARD LIST */}
@@ -531,18 +530,16 @@ export const RankingScreen: React.FC<{
                     </div>
                   </div>
                   {!entry.is_me && (
+                    <div onClick={(event) => event.stopPropagation()}>
                     <EnhancedMorphButton
                       size="sm"
                       variant={selectedPeerId === entry.account_id ? 'filled' : 'tonal'}
                       icon={<Swords size={13} />}
-                      onClick={() =>
-                        setSelectedPeerId((prev) =>
-                          prev === entry.account_id ? null : entry.account_id
-                        )
-                      }
+                      onClick={() => setSelectedPeerId(entry.account_id)}
                     >
                       Comparar
                     </EnhancedMorphButton>
+                    </div>
                   )}
                 </div>
               </div>
@@ -550,6 +547,30 @@ export const RankingScreen: React.FC<{
           ))
         )}
       </section>
+    </div>
+  );
+};
+
+/** Placeholder with the same layout as the comparison body while the head-to-head loads. */
+const ComparisonSkeleton: React.FC = () => {
+  const { tokens, isMaterialYou } = useM3Theme();
+  const block = (height: number, radius: number): React.CSSProperties => ({
+    height,
+    borderRadius: radius,
+    backgroundColor: tokens.surfaceContainerHigh,
+  });
+  return (
+    <div role="status" aria-label="Carregando comparação" style={{ marginTop: 18 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="m3-skeleton" style={{ ...block(92, isMaterialYou ? 22 : 12), animationDelay: `${i * 90}ms` }} />
+        ))}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 30 }}>
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="m3-skeleton" style={{ ...block(88, isMaterialYou ? 18 : 12), animationDelay: `${(i + 4) * 90}ms` }} />
+        ))}
+      </div>
     </div>
   );
 };

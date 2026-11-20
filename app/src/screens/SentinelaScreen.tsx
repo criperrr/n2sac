@@ -13,6 +13,8 @@ import {
   updateAccountDiscordLink,
   updateAccountFcmToken,
 } from '../api/nsacClient';
+import { Capacitor } from '@capacitor/core';
+import { registerNativeFcmPush } from '../notifications/pushService';
 import type { AccountProfileResponse } from '../api/types';
 import { M3_SPRINGS, useSpringValue } from '../theme/springPhysics';
 import { useM3Theme } from '../theme/ThemeContext';
@@ -86,24 +88,28 @@ export const SentinelaScreen: React.FC<{
   const animatedCertainty = useSpringValue(activityState.certainty, M3_SPRINGS.numberGauge);
 
   const handleRegisterFcm = async (customToken?: string) => {
-    const targetToken =
-      customToken ??
-      (fcmInput.trim() || `push_${accountProfile?.class_code ?? 'cti'}_${Date.now()}`);
     setSavingFcm(true);
     setStatusBanner(null);
     try {
+      let targetToken = customToken ?? fcmInput.trim();
+      if (!targetToken && Capacitor.isNativePlatform()) {
+        targetToken = await registerNativeFcmPush(token);
+      }
+      if (!targetToken) {
+        throw new Error('Abra o aplicativo Android para ativar notificações push nativas (FCM).');
+      }
       const updated = await updateAccountFcmToken(token, targetToken);
       onProfileUpdated(updated);
       setFcmInput(targetToken);
       setStatusBanner({
         type: 'success',
-        message: 'Notificações ativadas para a sua turma!',
+        message: 'Notificações nativas (Firebase FCM) ativadas para a sua turma!',
       });
     } catch (err) {
       setStatusBanner({
         type: 'error',
         message:
-          err instanceof NsacApiClientError
+          err instanceof Error
             ? err.message
             : 'Não foi possível ativar as notificações.',
       });

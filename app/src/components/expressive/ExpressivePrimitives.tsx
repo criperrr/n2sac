@@ -909,8 +909,27 @@ export const ExpressiveGradeCompareBar: React.FC<{
   personalGrade: number | null;
   classAverage: number | null;
   isRecovered?: boolean;
-}> = ({ personalGrade, classAverage, isRecovered = false }) => {
+  /** Row labels; defaults to the boletim's M.B. / M.T. */
+  labels?: [string, string];
+  /** Print each value at the end of its bar (used by the peer comparison). */
+  showValues?: boolean;
+}> = ({ personalGrade, classAverage, isRecovered = false, labels = ['M.B.', 'M.T.'], showValues = false }) => {
   const { tokens } = useM3Theme();
+  const valueLabel = (v: number | null) =>
+    showValues ? (
+      <span
+        style={{
+          minWidth: 30,
+          textAlign: 'right',
+          fontFamily: 'Outfit, sans-serif',
+          fontWeight: 800,
+          fontSize: '0.86rem',
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        {v !== null ? v.toFixed(1) : '—'}
+      </span>
+    ) : null;
   const pVal = personalGrade ?? 0;
   const cVal = classAverage ?? 0;
 
@@ -932,13 +951,13 @@ export const ExpressiveGradeCompareBar: React.FC<{
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span
           style={{
-            width: 34,
+            minWidth: 34,
             fontSize: '0.72rem',
             fontWeight: 700,
             color: tokens.onSurfaceVariant,
           }}
         >
-          M.B.
+          {labels[0]}
         </span>
         <div
           style={{
@@ -972,20 +991,21 @@ export const ExpressiveGradeCompareBar: React.FC<{
             }}
           />
         </div>
+        {valueLabel(personalGrade)}
       </div>
 
       {/* Class Average Bar (M.T.) */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span
           style={{
-            width: 34,
+            minWidth: 34,
             fontSize: '0.72rem',
             fontWeight: 600,
             color: tokens.onSurfaceVariant,
             opacity: 0.8,
           }}
         >
-          M.T.
+          {labels[1]}
         </span>
         <div
           style={{
@@ -1007,6 +1027,7 @@ export const ExpressiveGradeCompareBar: React.FC<{
             }}
           />
         </div>
+        {valueLabel(classAverage)}
       </div>
     </div>
   );

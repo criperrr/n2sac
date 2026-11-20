@@ -1,4 +1,5 @@
-import React, { useMemo } from 'react';
+import { formatVersionLabel } from '../appVersion';
+import React, { useMemo, useState } from 'react';
 import {
   Sun,
   Moon,
@@ -9,7 +10,15 @@ import {
   Feather,
   Layers,
   Check,
+  RefreshCw,
+  Settings,
 } from 'lucide-react';
+import {
+  applyOtaUpdate,
+  checkAllUpdates,
+  getEffectiveAppVersion,
+  type NativeUpdateInfo,
+} from '../updater/autoUpdater';
 import {
   APERTURE_PALETTE_PRESETS,
   detectCoursePresetFromClassCode,
@@ -38,7 +47,6 @@ export const AdaptiveStudioScreen: React.FC<{
     tokens,
     effectiveSeedHex,
     systemDynamicColor,
-    effectiveIsDark,
     updateSettings,
     switchDesignSystemWithAnimation,
     refreshSystemDynamicColor,
@@ -56,8 +64,129 @@ export const AdaptiveStudioScreen: React.FC<{
   const displayMode: ThemeMode =
     settings.mode === 'adaptive' ? 'system' : settings.mode;
 
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateResult, setUpdateResult] = useState<NativeUpdateInfo | null>(null);
+  const [updateStatusMsg, setUpdateStatusMsg] = useState<string | null>(null);
+
+  const handleCheckUpdates = async () => {
+    setCheckingUpdate(true);
+    setUpdateStatusMsg(null);
+    try {
+      const found = await checkAllUpdates();
+      setUpdateResult(found);
+      if (found) {
+        setUpdateStatusMsg(
+          `Nova versão ${found.version} encontrada (${found.source === 'server-ota' ? 'Servidor OTA' : 'GitHub Releases'}).`
+        );
+      } else {
+        setUpdateStatusMsg(`Você já está na versão mais recente (${formatVersionLabel(getEffectiveAppVersion())}).`);
+      }
+    } catch {
+      setUpdateStatusMsg('Não foi possível verificar atualizações agora.');
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: isMaterialYou ? 18 : 20 }}>
+      {/* 0. APP UPDATES SECTION (TOP OF CONFIGURAÇÕES) */}
+      <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <ExpressiveSegmentedCard index={0} total={1} style={{ padding: isMaterialYou ? '18px 20px' : '20px 24px' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <IconShapeContainer size={42} active>
+                <RefreshCw size={18} />
+              </IconShapeContainer>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '1rem' }}>
+                  Atualizações do App
+                </div>
+                <div style={{ fontSize: '0.8rem', color: tokens.onSurfaceVariant }}>
+                  Versão instalada: <strong>{formatVersionLabel(getEffectiveAppVersion())}</strong> • Servidor OTA & GitHub Releases
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              disabled={checkingUpdate}
+              onClick={() => void handleCheckUpdates()}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '9px 14px',
+                borderRadius: 999,
+                border: `1px solid ${tokens.outlineVariant}`,
+                backgroundColor: tokens.primaryContainer,
+                color: tokens.onPrimaryContainer,
+                fontSize: '0.8rem',
+                fontWeight: 700,
+                cursor: checkingUpdate ? 'wait' : 'pointer',
+              }}
+            >
+              <RefreshCw size={14} />
+              <span>{checkingUpdate ? 'Verificando...' : 'Verificar atualizações'}</span>
+            </button>
+          </div>
+
+          {updateStatusMsg && (
+            <div
+              style={{
+                marginTop: 12,
+                padding: '10px 12px',
+                borderRadius: 12,
+                backgroundColor: tokens.surfaceContainerHigh,
+                border: `1px solid ${tokens.outlineVariant}`,
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 10,
+                fontSize: '0.8rem',
+              }}
+            >
+              <span>{updateStatusMsg}</span>
+              {updateResult &&
+                (updateResult.source === 'server-ota' ? (
+                  <button
+                    type="button"
+                    onClick={() => void applyOtaUpdate(updateResult.buildId, updateResult.version)}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: 999,
+                      border: 'none',
+                      backgroundColor: tokens.primary,
+                      color: tokens.onPrimary,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Atualizar agora
+                  </button>
+                ) : (
+                  <a
+                    href={updateResult.downloadUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: 999,
+                      backgroundColor: tokens.primary,
+                      color: tokens.onPrimary,
+                      textDecoration: 'none',
+                      fontWeight: 700,
+                    }}
+                  >
+                    Baixar APK
+                  </a>
+                ))}
+            </div>
+          )}
+        </ExpressiveSegmentedCard>
+      </section>
+
       {/* 1. HERO HEADER & DESIGN SYSTEM SWITCHER (Design Padrão OpenAI vs Redesign Material You) */}
       <section
         style={{
@@ -68,11 +197,9 @@ export const AdaptiveStudioScreen: React.FC<{
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 }}>
-          {isMaterialYou && (
-            <IconShapeContainer size={52} active>
-              {effectiveIsDark ? <Moon size={22} /> : <Sun size={22} />}
-            </IconShapeContainer>
-          )}
+          <IconShapeContainer size={isMaterialYou ? 52 : 42} active>
+            <Settings size={isMaterialYou ? 22 : 20} />
+          </IconShapeContainer>
           <div>
             <div
               style={{
@@ -96,7 +223,7 @@ export const AdaptiveStudioScreen: React.FC<{
                 lineHeight: 1.1,
               }}
             >
-              Aparência & Temas
+              Configurações
             </h1>
           </div>
         </div>

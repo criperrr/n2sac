@@ -11,7 +11,6 @@ body {
   padding: 0;
   width: 100%;
   max-width: 100vw;
-  overflow-x: hidden;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background-color: var(--m3-background, #0d0d0d);
   color: var(--m3-on-background, #f5f5f5);
@@ -20,6 +19,12 @@ body {
   transition:
     background-color 240ms cubic-bezier(0.2, 0, 0, 1),
     color 240ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Horizontal clipping lives on <html> only: it propagates to the viewport. Setting it on <body>
+ * too turns body into its own scroll container, which breaks the sticky desktop rail. */
+html {
+  overflow-x: hidden;
 }
 
 /* When Material You Redesign is active, switch global typography to Outfit/Nunito */
@@ -52,14 +57,170 @@ code {
 }
 
 .nsac-desktop-rail {
+  --rail-ease: cubic-bezier(0.2, 0, 0, 1);
   width: 256px;
   flex-shrink: 0;
+  align-self: flex-start;
   padding: 18px 14px;
   display: none;
   flex-direction: column;
   position: sticky;
   top: 0;
+  z-index: 30;
   height: 100dvh;
+  overflow: hidden;
+  transition:
+    width 320ms var(--rail-ease),
+    padding 320ms var(--rail-ease);
+}
+
+.nsac-desktop-rail.is-collapsed {
+  width: 84px;
+  padding: 18px 12px;
+}
+
+/* Text that collapses horizontally with the rail (labels, brand, button text) */
+.nsac-rail-fade {
+  display: inline-block;
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 1;
+  transition:
+    max-width 320ms var(--rail-ease),
+    opacity 180ms var(--rail-ease) 80ms;
+}
+
+.is-collapsed .nsac-rail-fade {
+  max-width: 0;
+  opacity: 0;
+  transition:
+    max-width 320ms var(--rail-ease),
+    opacity 120ms var(--rail-ease);
+}
+
+/* Lines that collapse vertically with the rail (e-mail under the class chip) */
+.nsac-rail-fade-block {
+  max-height: 24px;
+  margin-top: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 1;
+  transition:
+    max-height 320ms var(--rail-ease),
+    margin-top 320ms var(--rail-ease),
+    opacity 180ms var(--rail-ease) 80ms;
+}
+
+.is-collapsed .nsac-rail-fade-block {
+  max-height: 0;
+  margin-top: 0;
+  opacity: 0;
+  transition:
+    max-height 320ms var(--rail-ease),
+    margin-top 320ms var(--rail-ease),
+    opacity 120ms var(--rail-ease);
+}
+
+.nsac-rail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 4px 20px 10px;
+  transition: padding 320ms var(--rail-ease);
+}
+
+.is-collapsed .nsac-rail-header {
+  justify-content: center;
+  gap: 0;
+  padding: 8px 0 20px;
+}
+
+.nsac-rail-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.nsac-rail-badge {
+  padding: 12px 14px;
+  border-radius: 20px;
+  margin-bottom: 16px;
+  transition: padding 320ms var(--rail-ease);
+}
+
+.is-collapsed .nsac-rail-badge {
+  padding: 10px 4px;
+}
+
+.nsac-rail-badge-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.is-collapsed .nsac-rail-badge-row {
+  justify-content: center;
+  gap: 0;
+}
+
+.nsac-rail-item {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  transition:
+    background-color 220ms ease,
+    gap 320ms var(--rail-ease),
+    padding 320ms var(--rail-ease);
+}
+
+.is-collapsed .nsac-rail-item {
+  justify-content: center;
+  gap: 0;
+  padding: 10px 0;
+}
+
+.nsac-rail-footer {
+  padding: 12px;
+  border-radius: 22px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: padding 320ms var(--rail-ease);
+}
+
+.is-collapsed .nsac-rail-footer {
+  flex-direction: column;
+  padding: 8px 0;
+}
+
+.nsac-rail-refresh {
+  flex: 1 1 auto;
+  min-width: 36px;
+  gap: 6px;
+  padding: 0 12px;
+}
+
+.is-collapsed .nsac-rail-refresh {
+  flex: 0 0 auto;
+  width: 36px;
+  gap: 0;
+  padding: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nsac-desktop-rail,
+  .nsac-desktop-rail * {
+    transition: none !important;
+  }
 }
 
 .nsac-main-viewport {
@@ -472,4 +633,24 @@ html[data-design-system='material-you'] .nsac-official-table-wrapper {
 
 .openai-aperture-svg {
   animation: openaiApertureSpin 1050ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.m3-skeleton {
+  animation: m3SkeletonPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes m3SkeletonPulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .m3-skeleton {
+    animation: none;
+  }
 }

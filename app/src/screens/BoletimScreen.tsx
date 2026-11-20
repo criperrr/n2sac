@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { ExpressiveModal, MetricTile, ModalHeader } from '../components/expressive/ExpressiveModal';
 import {
   Search,
   TrendingUp,
@@ -187,7 +187,7 @@ function classifySubjectArea(subjectName: string): SubjectAreaKey {
  * Adaptive, keyword-based subject icon resolver covering standard Brazilian high school
  * and CTI technical courses (Informática, Eletrônica, Mecânica), with safe fallback to BookOpen.
  */
-function renderSubjectIcon(subjectName: string, size = 19): React.ReactNode {
+export function renderSubjectIcon(subjectName: string, size = 19): React.ReactNode {
   const n = stripAccents(subjectName);
   if (n.includes('matemat') || n.includes('calculo') || n.includes('estatist')) {
     return <Sigma size={size} />;
@@ -3504,111 +3504,24 @@ const SubjectDetailsModal: React.FC<{
 }> = ({ analysis, classCode, year, onClose }) => {
   const { tokens } = useM3Theme();
   const { subject } = analysis;
-  const [isClosing, setIsClosing] = useState(false);
+  const goalPositive = analysis.goalStatus === 'passed_24' || analysis.goalStatus === 'completed_pass';
+  const goalNegative = analysis.goalStatus === 'needs_recovery' || analysis.goalStatus === 'completed_fail';
+  const goalColor = goalPositive
+    ? tokens.onGradeSuccessContainer
+    : goalNegative
+      ? tokens.onErrorContainer
+      : tokens.onGradeWarningContainer;
 
-  const requestClose = React.useCallback(() => {
-    if (isClosing) return;
-    setIsClosing(true);
-    window.setTimeout(() => {
-      onClose();
-    }, 220);
-  }, [isClosing, onClose]);
-
-  // Lock body scroll and close on Escape key
-  useEffect(() => {
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') requestClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-
-    return () => {
-      document.body.style.overflow = prevOverflow;
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  }, [requestClose]);
-
-  const modalTree = (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Detalhes de ${subject.subjectName}`}
-      onClick={requestClose}
-      className={isClosing ? 'm3-modal-backdrop-exit' : 'm3-modal-backdrop'}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 9999,
-        backgroundColor: 'rgba(0, 0, 0, 0.68)',
-        backdropFilter: 'blur(8px)',
-        WebkitBackdropFilter: 'blur(8px)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '16px',
-      }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className={isClosing ? 'm3-modal-dialog-exit' : 'm3-modal-dialog-enter'}
-        style={{
-          width: '100%',
-          maxWidth: 720,
-          maxHeight: '88dvh',
-          overflowY: 'auto',
-          borderRadius: 32,
-          padding: '22px 24px 28px',
-          backgroundColor: tokens.surfaceContainerLow,
-          color: tokens.onSurface,
-          border: `1px solid ${tokens.outlineVariant}`,
-          boxShadow: '0 28px 72px rgba(0, 0, 0, 0.55)',
-        }}
-      >
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-            <IconShapeContainer size={46} active>
-              {renderSubjectIcon(subject.subjectName, 21)}
-            </IconShapeContainer>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: '0.76rem', fontWeight: 700, color: tokens.primary, textTransform: 'uppercase' }}>
-                {classCode} • Ano Letivo {year}
-              </div>
-              <h2
-                style={{
-                  margin: '4px 0 0',
-                  fontFamily: 'Outfit, sans-serif',
-                  fontSize: '1.45rem',
-                  fontWeight: 800,
-                }}
-              >
-                {subject.subjectName}
-              </h2>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={requestClose}
-            aria-label="Fechar modal"
-            style={{
-              width: 38,
-              height: 38,
-              borderRadius: 999,
-              border: `1px solid ${tokens.outlineVariant}`,
-              backgroundColor: tokens.surfaceContainerHigh,
-              color: tokens.onSurface,
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
-          >
-            <X size={18} />
-          </button>
-        </div>
+  return (
+    <ExpressiveModal ariaLabel={`Detalhes de ${subject.subjectName}`} onClose={onClose}>
+      {(close) => (
+      <>
+        <ModalHeader
+          icon={renderSubjectIcon(subject.subjectName, 21)}
+          eyebrow={`${classCode} • Ano Letivo ${year}`}
+          title={subject.subjectName}
+          onClose={() => close()}
+        />
 
         {/* Summary Metrics Grid: Média, Soma de Pontos / 24, Meta p/ Aprovação Direta, Total de Faltas */}
         <div
@@ -3620,96 +3533,59 @@ const SubjectDetailsModal: React.FC<{
             marginBottom: 16,
           }}
         >
-          <div
-            style={{
-              padding: '14px 16px',
-              borderRadius: 22,
-              backgroundColor: tokens.primaryContainer,
-              color: tokens.onPrimaryContainer,
-            }}
-          >
-            <div style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase' }}>
-              Média Atual / Final
-            </div>
-            <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: '1.75rem', fontWeight: 800, marginTop: 4 }}>
-              {analysis.personalAvg !== null ? analysis.personalAvg.toFixed(2) : 'Em curso'}
-            </div>
-            <div style={{ fontSize: '0.74rem', marginTop: 2, opacity: 0.85 }}>
-              Sala (M.T.): {analysis.classAvg !== null ? analysis.classAvg.toFixed(2) : '—'}
-            </div>
-          </div>
-
-          <div
-            style={{
-              padding: '14px 16px',
-              borderRadius: 22,
-              backgroundColor: tokens.secondaryContainer,
-              color: tokens.onSecondaryContainer,
-            }}
-          >
-            <div style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase' }}>
-              Pontos Acumulados
-            </div>
-            <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: '1.75rem', fontWeight: 800, marginTop: 4 }}>
-              {analysis.accumulatedPoints.toFixed(1)}{' '}
-              <span style={{ fontSize: '0.95rem', fontWeight: 600 }}>/ 24,0</span>
-            </div>
-            <div style={{ fontSize: '0.74rem', marginTop: 2, opacity: 0.85 }}>
-              Máximo anual: {CTI_MAX_POINTS_TOTAL.toFixed(0)} pts
-            </div>
-          </div>
-
-          <div
-            style={{
-              padding: '14px 16px',
-              borderRadius: 22,
-              backgroundColor:
-                analysis.goalStatus === 'passed_24' || analysis.goalStatus === 'completed_pass'
-                  ? tokens.gradeSuccessContainer
-                  : analysis.goalStatus === 'needs_recovery' ||
-                      analysis.goalStatus === 'completed_fail'
-                    ? tokens.errorContainer
-                    : tokens.gradeWarningContainer,
-              color:
-                analysis.goalStatus === 'passed_24' || analysis.goalStatus === 'completed_pass'
-                  ? tokens.onGradeSuccessContainer
-                  : analysis.goalStatus === 'needs_recovery' ||
-                      analysis.goalStatus === 'completed_fail'
-                    ? tokens.onErrorContainer
-                    : tokens.onGradeWarningContainer,
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase' }}>
-              <Target size={13} />
-              <span>Projeção (Média 6,0)</span>
-            </div>
-            <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: '1.02rem', fontWeight: 800, marginTop: 6 }}>
-              {analysis.goalBadgeText}
-            </div>
-            <div style={{ fontSize: '0.73rem', marginTop: 2 }}>{analysis.goalDetailText}</div>
-          </div>
-
-          <div
-            style={{
-              padding: '14px 16px',
-              borderRadius: 22,
-              backgroundColor: tokens.surfaceContainerHigh,
-              color: tokens.onSurface,
-              border: `1px solid ${tokens.outlineVariant}`,
-            }}
-          >
-            <div style={{ fontSize: '0.7rem', fontWeight: 700, color: tokens.onSurfaceVariant, textTransform: 'uppercase' }}>
-              Total de Faltas
-            </div>
-            <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: '1.75rem', fontWeight: 800, marginTop: 4 }}>
-              {subject.results.totalAbsences} aulas
-            </div>
-            <div style={{ fontSize: '0.74rem', marginTop: 2, color: tokens.onSurfaceVariant }}>
-              {analysis.absenceSharePercent > 0
+          <MetricTile
+            label="Média Atual / Final"
+            value={analysis.personalAvg !== null ? analysis.personalAvg.toFixed(2) : 'Em curso'}
+            caption={`Sala (M.T.): ${analysis.classAvg !== null ? analysis.classAvg.toFixed(2) : '—'}`}
+            background={tokens.primaryContainer}
+            color={tokens.onPrimaryContainer}
+          />
+          <MetricTile
+            label="Pontos Acumulados"
+            value={
+              <>
+                {analysis.accumulatedPoints.toFixed(1)}{' '}
+                <span style={{ fontSize: '0.95rem', fontWeight: 600 }}>/ 24,0</span>
+              </>
+            }
+            caption={`Máximo anual: ${CTI_MAX_POINTS_TOTAL.toFixed(0)} pts`}
+            background={tokens.secondaryContainer}
+            color={tokens.onSecondaryContainer}
+          />
+          <MetricTile
+            label={
+              <>
+                <Target size={13} />
+                <span>Projeção (Média 6,0)</span>
+              </>
+            }
+            value={analysis.goalBadgeText}
+            caption={analysis.goalDetailText}
+            compactValue
+            background={
+              goalPositive
+                ? tokens.gradeSuccessContainer
+                : goalNegative
+                  ? tokens.errorContainer
+                  : tokens.gradeWarningContainer
+            }
+            color={goalColor}
+            captionColor={goalColor}
+          />
+          <MetricTile
+            label="Total de Faltas"
+            value={`${subject.results.totalAbsences} aulas`}
+            caption={
+              analysis.absenceSharePercent > 0
                 ? `${analysis.absenceSharePercent.toFixed(1)}% das suas faltas no ano`
-                : 'Nenhuma falta registrada'}
-            </div>
-          </div>
+                : 'Nenhuma falta registrada'
+            }
+            background={tokens.surfaceContainerHigh}
+            color={tokens.onSurface}
+            borderColor={tokens.outlineVariant}
+            labelColor={tokens.onSurfaceVariant}
+            captionColor={tokens.onSurfaceVariant}
+          />
         </div>
 
         {/* 4 Bimesters Segmented Breakdown */}
@@ -3866,9 +3742,8 @@ const SubjectDetailsModal: React.FC<{
             );
           })}
         </div>
-      </div>
-    </div>
+      </>
+      )}
+    </ExpressiveModal>
   );
-
-  return createPortal(modalTree, document.body);
 };

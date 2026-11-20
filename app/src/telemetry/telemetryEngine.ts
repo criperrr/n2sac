@@ -1,8 +1,8 @@
 import { getApiBaseUrl } from '../api/nsacClient';
+import { APP_VERSION } from '../appVersion';
 
 const CONSENT_STORAGE_KEY = 'n2sac_telemetry_consent_v1';
 const FINGERPRINT_KEY = 'n2sac_device_fp_v1';
-const APP_VERSION = '2.0.0';
 
 export type TelemetryConsentState = 'undecided' | 'granted' | 'denied';
 

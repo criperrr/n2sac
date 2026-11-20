@@ -279,10 +279,10 @@ impl RankingRepo {
                 ON rp.account_id = a.id AND rp.opted_in = TRUE
             JOIN grades g
                 ON g.account_id = a.id
-            JOIN school_years sy
-                ON sy.id = g.school_year_id
             JOIN subjects s
                 ON s.id = g.subject_id
+            JOIN school_years sy
+                ON sy.id = s.school_year_id
             WHERE a.active = TRUE
               AND sy.year = $1
               AND g.grade IS NOT NULL
@@ -408,8 +408,8 @@ impl RankingRepo {
                     ROUND(AVG(NULLIF(g.average_grade, 0))::numeric, 2)::float8 AS avg_class,
                     COALESCE(SUM(g.absences), 0)::bigint AS total_absences
                 FROM grades g
-                JOIN school_years sy ON sy.id = g.school_year_id
                 JOIN subjects s ON s.id = g.subject_id
+                JOIN school_years sy ON sy.id = s.school_year_id
                 WHERE g.account_id = $1
                   AND sy.year = $2
                   AND g.grade IS NOT NULL

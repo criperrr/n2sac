@@ -4,13 +4,17 @@ import {
   CalendarClock,
   Trophy,
   Bell,
-  Palette,
+  User,
   RefreshCw,
   LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react';
 import { M3_SPRINGS, useSpringValue } from '../theme/springPhysics';
 import { useM3Theme } from '../theme/ThemeContext';
 import { IconShapeContainer } from './expressive/ExpressivePrimitives';
+
+const RAIL_COLLAPSED_KEY = 'nsac_rail_collapsed';
 
 export type AppTabId = 'boletim' | 'ranking' | 'frequencia' | 'sentinela' | 'studio';
 
@@ -48,9 +52,9 @@ export const NAV_TABS: NavTabItem[] = [
   },
   {
     id: 'studio',
-    label: 'Aparência',
-    shortLabel: 'Aparência',
-    icon: <Palette size={20} />,
+    label: 'Perfil',
+    shortLabel: 'Perfil',
+    icon: <User size={20} />,
   },
 ];
 
@@ -75,6 +79,8 @@ const ExpressiveNavItem: React.FC<{
       type="button"
       role="tab"
       aria-selected={selected}
+      aria-label={item.label}
+      title={vertical ? undefined : item.label}
       onClick={onClick}
       onPointerDown={() => setPressed(true)}
       onPointerUp={() => setPressed(false)}
@@ -87,8 +93,9 @@ const ExpressiveNavItem: React.FC<{
         flexDirection: vertical ? 'column' : 'row',
         alignItems: 'center',
         justifyContent: vertical ? 'center' : 'flex-start',
+        textAlign: 'left',
         gap: vertical ? 3 : 12,
-        padding: vertical ? '6px 2px' : '12px 16px',
+        padding: vertical ? '6px 2px' : '2px 0',
         background: 'transparent',
         border: 'none',
         cursor: 'pointer',
@@ -149,21 +156,15 @@ const ExpressiveNavItem: React.FC<{
         </>
       ) : (
         <div
+          className="nsac-rail-item"
           style={{
-            position: 'relative',
-            width: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            padding: '10px 14px',
             borderRadius: `${indicatorRadius.toFixed(1)}px`,
             backgroundColor: selected ? tokens.secondaryContainer : 'transparent',
             border: `1px solid ${selected ? tokens.primary : 'transparent'}`,
-            transition: 'background-color 220ms ease',
           }}
         >
-          <span style={{ display: 'flex' }}>{item.icon}</span>
-          <span style={{ fontSize: '0.92rem', fontWeight: selected ? 700 : 500 }}>
+          <span style={{ display: 'flex', flexShrink: 0 }}>{item.icon}</span>
+          <span className="nsac-rail-fade" style={{ fontSize: '0.92rem', fontWeight: selected ? 700 : 500 }}>
             {item.label}
           </span>
         </div>
@@ -196,51 +197,94 @@ export const ExpressiveNavigationShell: React.FC<{
   children,
 }) => {
   const { tokens } = useM3Theme();
+  const [railCollapsed, setRailCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(RAIL_COLLAPSED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleRail = () => {
+    setRailCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(RAIL_COLLAPSED_KEY, next ? '1' : '0');
+      } catch {
+        // storage unavailable: keep in-memory state only
+      }
+      return next;
+    });
+  };
+  const refreshDisabled = refreshCooldown > 0 || isRefreshing;
 
   return (
     <div className="nsac-shell-layout" style={{ backgroundColor: tokens.background, color: tokens.onBackground }}>
-      {/* Desktop / Tablet Navigation Rail */}
+      {/* Desktop / Tablet Navigation Rail (collapsible) */}
       <aside
-        className="nsac-desktop-rail"
+        className={`nsac-desktop-rail${railCollapsed ? ' is-collapsed' : ''}`}
         style={{
           backgroundColor: tokens.surfaceContainerLow,
           borderRight: `1px solid ${tokens.outlineVariant}`,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 10px 20px' }}>
-          <IconShapeContainer size={46} active={isRefreshing}>
-            <GraduationCap size={22} />
-          </IconShapeContainer>
-          <div style={{ minWidth: 0 }}>
-            <div
-              style={{
-                fontFamily: 'Outfit, sans-serif',
-                fontWeight: 800,
-                fontSize: '1.25rem',
-                letterSpacing: '-0.02em',
-                color: tokens.primary,
-              }}
-            >
-              n²sac
-            </div>
-            <div style={{ fontSize: '0.72rem', color: tokens.onSurfaceVariant }}>
-              CTI • UNESP Bauru
+        <div className="nsac-rail-header">
+          <div className="nsac-rail-fade nsac-rail-brand">
+            <IconShapeContainer size={46} active={isRefreshing}>
+              <GraduationCap size={22} />
+            </IconShapeContainer>
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  fontFamily: 'Outfit, sans-serif',
+                  fontWeight: 800,
+                  fontSize: '1.25rem',
+                  letterSpacing: '-0.02em',
+                  color: tokens.primary,
+                }}
+              >
+                n²sac
+              </div>
+              <div style={{ fontSize: '0.72rem', color: tokens.onSurfaceVariant }}>CTI • UNESP Bauru</div>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={toggleRail}
+            aria-label={railCollapsed ? 'Expandir barra lateral' : 'Recolher barra lateral'}
+            aria-expanded={!railCollapsed}
+            title={railCollapsed ? 'Expandir barra lateral' : 'Recolher barra lateral'}
+            style={{
+              width: 38,
+              height: 38,
+              flexShrink: 0,
+              borderRadius: 999,
+              border: `1px solid ${tokens.outlineVariant}`,
+              backgroundColor: tokens.surfaceContainerHigh,
+              color: tokens.onSurface,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+            }}
+          >
+            {railCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+          </button>
         </div>
 
         {/* Student Account Badge */}
         <div
+          className="nsac-rail-badge"
+          title={railCollapsed ? `${classCode ?? 'CTI'} • ${nsacEmail}` : undefined}
           style={{
-            padding: '12px 14px',
-            borderRadius: 20,
             backgroundColor: tokens.surfaceContainerHigh,
             border: `1px solid ${tokens.outlineVariant}`,
-            marginBottom: 16,
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: '0.72rem', fontWeight: 700, color: tokens.primary, textTransform: 'uppercase' }}>
+          <div className="nsac-rail-badge-row">
+            <span
+              className="nsac-rail-fade"
+              style={{ fontSize: '0.72rem', fontWeight: 700, color: tokens.primary, textTransform: 'uppercase' }}
+            >
               Sua Turma
             </span>
             <span
@@ -249,6 +293,7 @@ export const ExpressiveNavigationShell: React.FC<{
                 borderRadius: 999,
                 fontSize: '0.72rem',
                 fontWeight: 800,
+                whiteSpace: 'nowrap',
                 backgroundColor: tokens.primaryContainer,
                 color: tokens.onPrimaryContainer,
               }}
@@ -256,17 +301,7 @@ export const ExpressiveNavigationShell: React.FC<{
               {classCode ?? 'CTI'}
             </span>
           </div>
-          <div
-            style={{
-              fontSize: '0.8rem',
-              fontWeight: 600,
-              marginTop: 6,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-            title={nsacEmail}
-          >
+          <div className="nsac-rail-fade-block" style={{ fontSize: '0.8rem', fontWeight: 600 }} title={nsacEmail}>
             {nsacEmail}
           </div>
         </div>
@@ -285,21 +320,19 @@ export const ExpressiveNavigationShell: React.FC<{
 
         {/* Actions in Rail Footer */}
         <div
+          className="nsac-rail-footer"
           style={{
-            padding: 12,
-            borderRadius: 22,
             backgroundColor: tokens.surfaceContainer,
             border: `1px solid ${tokens.outlineVariant}`,
-            display: 'flex',
-            gap: 6,
           }}
         >
           <button
             type="button"
-            disabled={refreshCooldown > 0 || isRefreshing}
+            className="nsac-rail-refresh"
+            disabled={refreshDisabled}
             onClick={onManualRefresh}
+            title="Atualizar notas"
             style={{
-              flex: 1,
               height: 36,
               borderRadius: 999,
               border: `1px solid ${tokens.outlineVariant}`,
@@ -310,21 +343,22 @@ export const ExpressiveNavigationShell: React.FC<{
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: 6,
-              cursor: refreshCooldown > 0 || isRefreshing ? 'not-allowed' : 'pointer',
-              opacity: refreshCooldown > 0 || isRefreshing ? 0.5 : 1,
+              cursor: refreshDisabled ? 'not-allowed' : 'pointer',
+              opacity: refreshDisabled ? 0.5 : 1,
             }}
           >
-            <RefreshCw size={14} className={isRefreshing ? 'spin-icon' : ''} />
-            {refreshCooldown > 0 ? `${refreshCooldown}s` : 'Atualizar'}
+            <RefreshCw size={14} className={isRefreshing ? 'spin-icon' : ''} style={{ flexShrink: 0 }} />
+            <span className="nsac-rail-fade">{refreshCooldown > 0 ? `${refreshCooldown}s` : 'Atualizar'}</span>
           </button>
           <button
             type="button"
             onClick={onLogout}
             title="Sair da conta"
+            aria-label="Sair da conta"
             style={{
               width: 36,
               height: 36,
+              flexShrink: 0,
               borderRadius: 999,
               border: `1px solid ${tokens.outlineVariant}`,
               backgroundColor: tokens.surfaceContainerHighest,

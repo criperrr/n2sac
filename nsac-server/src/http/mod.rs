@@ -5,6 +5,7 @@ pub mod envelope;
 pub mod extract;
 pub mod health;
 pub mod nsac_routes;
+pub mod profile_routes;
 pub mod telemetry_routes;
 
 use axum::Router;
@@ -21,6 +22,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(auth_routes::login))
         .route("/api/v1/auth/logout", post(auth_routes::logout))
         .route("/api/v1/account", get(account_routes::get_account))
+        .route(
+            "/api/v1/account/profile",
+            get(profile_routes::get_profile).put(profile_routes::put_profile),
+        )
         .route(
             "/api/v1/account/fcm-token",
             put(account_routes::put_fcm_token),

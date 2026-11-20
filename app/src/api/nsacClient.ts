@@ -30,6 +30,49 @@ export class NsacApiClientError extends Error {
   }
 }
 
+const REFRESH_LIMIT_KEY = 'n2sac_boletim_refresh_ts_v1';
+const REFRESH_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const REFRESH_MAX_COUNT = 10; // 10 requests per 5-minute sliding window
+
+/**
+ * Frontend sliding-window rate limiter: max 10 manual refreshes per 5 minutes.
+ * Throws NsacApiClientError(429) if exceeded, mirroring the backend limiter.
+ */
+export function consumeManualRefreshQuota(): { remaining: number } {
+  const now = Date.now();
+  let timestamps: number[] = [];
+  try {
+    const raw = localStorage.getItem(REFRESH_LIMIT_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        timestamps = parsed.filter((t): t is number => typeof t === 'number' && now - t < REFRESH_WINDOW_MS);
+      }
+    }
+  } catch {
+    timestamps = [];
+  }
+
+  if (timestamps.length >= REFRESH_MAX_COUNT) {
+    const oldest = timestamps[0] ?? now;
+    const retrySecs = Math.max(1, Math.ceil((REFRESH_WINDOW_MS - (now - oldest)) / 1000));
+    throw new NsacApiClientError(
+      'RATE_LIMITED',
+      `Limite de 10 atualizações a cada 5 minutos atingido. Aguarde ${retrySecs}s.`,
+      429
+    );
+  }
+
+  timestamps.push(now);
+  try {
+    localStorage.setItem(REFRESH_LIMIT_KEY, JSON.stringify(timestamps));
+  } catch {
+    // ignore storage quota errors
+  }
+
+  return { remaining: Math.max(0, REFRESH_MAX_COUNT - timestamps.length) };
+}
+
 export function getApiBaseUrl(): string {
   const envUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
   if (envUrl && envUrl.trim().length > 0) {
@@ -266,8 +309,13 @@ export async function fetchBoletim(
   forceRefresh = false,
   filterParams?: BoletimApiQueryParams
 ): Promise<CachedResource<AllYearsResponse>> {
+  if (forceRefresh) {
+    consumeManualRefreshQuota();
+  }
   const qs = filterParams ? buildBoletimFilterQueryString(filterParams) : '';
-  const path = qs ? `/api/v1/nsac/boletim?${qs}` : '/api/v1/nsac/boletim';
+  const refreshParam = forceRefresh ? (qs ? '&refresh=true' : 'refresh=true') : '';
+  const fullQs = `${qs}${refreshParam}`;
+  const path = fullQs ? `/api/v1/nsac/boletim?${fullQs}` : '/api/v1/nsac/boletim';
   const routeKey = qs ? `boletim:${qs}` : 'boletim';
   return fetchWithEtagCache<AllYearsResponse>({
     path,
@@ -393,6 +441,61 @@ export async function deleteAccountFcmToken(
   }
   // If server only exposes PUT /account/fcm-token, clear local device registration gracefully
   return { cleared: true };
+}
+
+export interface UserProfileData {
+  account_id: number;
+  first_name: string;
+  display_name: string | null;
+  bio: string | null;
+  avatar_data_url: string | null;
+  banner_data_url: string | null;
+}
+
+export async function fetchUserProfile(token: string): Promise<UserProfileData> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/account/profile`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const body = (await res.json()) as { success?: boolean; data?: UserProfileData; error?: { code?: string; message?: string } };
+  if (!res.ok || !body?.success || !body.data) {
+    throw new NsacApiClientError(
+      body?.error?.code ?? 'PROFILE_ERROR',
+      body?.error?.message ?? 'Não foi possível carregar o perfil.',
+      res.status
+    );
+  }
+  return body.data;
+}
+
+export async function updateUserProfile(
+  token: string,
+  payload: {
+    display_name?: string | null;
+    bio?: string | null;
+    avatar_data_url?: string | null;
+    banner_data_url?: string | null;
+  }
+): Promise<UserProfileData> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/account/profile`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  const body = (await res.json()) as { success?: boolean; data?: UserProfileData; error?: { code?: string; message?: string } };
+  if (!res.ok || !body?.success || !body.data) {
+    throw new NsacApiClientError(
+      body?.error?.code ?? 'PROFILE_ERROR',
+      body?.error?.message ?? 'Não foi possível salvar o perfil.',
+      res.status
+    );
+  }
+  return body.data;
 }
 
 export async function updateAccountDiscordLink(
