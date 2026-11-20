@@ -6,6 +6,15 @@ REMOTE_USER="${N2SAC_USER:-criper}"
 REMOTE_HOST="${N2SAC_HOST:-192.168.1.150}"
 REMOTE_DIR="${N2SAC_REMOTE_DIR:-/opt/n2sac}"
 
+echo "[deploy-web] Stamping OTA buildId in app/public/version.json..."
+cat > "${ROOT_DIR}/app/public/version.json" <<EOF
+{
+  "version": "2.0.0",
+  "buildId": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "channel": "ota"
+}
+EOF
+
 echo "[deploy-web] Typechecking frontend..."
 (cd "${ROOT_DIR}/app" && npx tsc --noEmit)
 

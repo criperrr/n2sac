@@ -432,12 +432,13 @@ fn parse_table_rows(doc: &Html) -> Result<Option<ParsedTable>, AppError> {
     })?;
 
     let table_sel = sel("table")?;
-    let Some(table) = content.select(&table_sel).next() else {
+    let tables: Vec<ElementRef<'_>> = content.select(&table_sel).collect();
+    if tables.is_empty() {
         return Ok(None);
-    };
+    }
 
     let th_sel = sel("thead tr th")?;
-    let headers: Vec<String> = table
+    let headers: Vec<String> = tables[0]
         .select(&th_sel)
         .map(|th| normalize_text(&element_text(th)))
         .collect();
@@ -446,19 +447,21 @@ fn parse_table_rows(doc: &Html) -> Result<Option<ParsedTable>, AppError> {
     let td_sel = sel("td")?;
     let mut rows = Vec::new();
 
-    for tr in table.select(&tr_sel) {
-        let cells: Vec<ElementRef<'_>> = tr.select(&td_sel).collect();
-        if cells.is_empty() {
-            continue;
+    for table in tables {
+        for tr in table.select(&tr_sel) {
+            let cells: Vec<ElementRef<'_>> = tr.select(&td_sel).collect();
+            if cells.is_empty() {
+                continue;
+            }
+            if cells.len() == 1 && cells[0].value().attr("colspan").is_some() {
+                continue;
+            }
+            let raw_cols: Vec<String> = cells.into_iter().map(element_text).collect();
+            if raw_cols.iter().all(|c| c.is_empty()) {
+                continue;
+            }
+            rows.push(raw_cols);
         }
-        if cells.len() == 1 && cells[0].value().attr("colspan").is_some() {
-            continue;
-        }
-        let raw_cols: Vec<String> = cells.into_iter().map(element_text).collect();
-        if raw_cols.iter().all(|c| c.is_empty()) {
-            continue;
-        }
-        rows.push(raw_cols);
     }
 
     Ok(Some(ParsedTable { headers, rows }))

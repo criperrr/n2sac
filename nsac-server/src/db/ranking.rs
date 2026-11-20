@@ -131,14 +131,22 @@ impl RankingRepo {
                 display_name TEXT NULL,
                 has_decided BOOLEAN NOT NULL DEFAULT FALSE,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            CREATE INDEX IF NOT EXISTS idx_ranking_prefs_opted_in
-                ON account_ranking_preferences (opted_in)
-                WHERE opted_in = TRUE;
+            )
             "#,
         )
         .execute(&self.pool)
         .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_ranking_prefs_opted_in
+                ON account_ranking_preferences (opted_in)
+                WHERE opted_in = TRUE
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 

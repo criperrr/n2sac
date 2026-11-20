@@ -65,6 +65,52 @@ pub fn compute_historical_certainty(
     (0.30 + 0.55 * cluster_score).clamp(0.30, 0.85)
 }
 
+/// Detects the "Post-Exam-Week Early Posting Wave" on the **latest active bimester**
+/// of the most recent school year.
+///
+/// Older bimesters (e.g., 2nd/3rd) may have a few unposted grades due to make-up exams
+/// (*reposição*) and are ignored. When the highest bimester with at least 1 posted grade
+/// has only a minority of subjects posted (`1%..=45%`), exam week has just ended and
+/// grade-posting probability over the next 7 days is high (`[0.55, 0.80]`).
+pub fn compute_early_posting_wave_certainty(boletim: &AllYearsResponse) -> f64 {
+    let Some(latest_year) = boletim.data.iter().max_by_key(|y| y.year) else {
+        return 0.0;
+    };
+    let total_subjects = latest_year.grades.len();
+    if total_subjects < 3 {
+        return 0.0;
+    }
+
+    for target_bim in (1u8..=4u8).rev() {
+        let posted_count = latest_year
+            .grades
+            .iter()
+            .filter(|subj| {
+                subj.bimesters.iter().any(|b| {
+                    b.bimester == target_bim
+                        && (b.class.average_grade.is_some_and(|v| v.is_finite() && v > 0.0)
+                            || b.personal.grade.is_some_and(|v| v.is_finite() && v > 0.0))
+                })
+            })
+            .count();
+
+        if posted_count == 0 {
+            continue;
+        }
+
+        // Found the latest active bimester.
+        let ratio = posted_count as f64 / total_subjects as f64;
+        if ratio <= 0.45 {
+            // Peak certainty when the first 5%..=25% of grades have just started dropping.
+            let intensity = 1.0 - ((ratio - 0.15).abs() / 0.35).clamp(0.0, 1.0);
+            return (0.55 + 0.25 * intensity).clamp(0.55, 0.80);
+        }
+        return 0.0;
+    }
+
+    0.0
+}
+
 /// Maps heuristic certainty and hot-mode state into the next polling interval in seconds.
 pub fn compute_interval_from_certainty(
     certainty: f64,
@@ -551,11 +597,13 @@ pub async fn poll_due_classes_once(
                     .sentinel()
                     .list_events_for_class(&class_state.class_code)
                     .await?;
-                class_state.current_certainty = compute_historical_certainty(
+                let hist_cert = compute_historical_certainty(
                     &events,
                     now,
                     state.config.sentinel.historical_radius_days,
                 );
+                let early_wave_cert = compute_early_posting_wave_certainty(&sentinel_boletim);
+                class_state.current_certainty = hist_cert.max(early_wave_cert);
                 class_state.current_interval_secs = compute_interval_from_certainty(
                     class_state.current_certainty,
                     false,
