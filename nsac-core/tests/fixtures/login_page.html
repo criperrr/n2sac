@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>NSac Online - NSac Online</title>
+</head>
+<body class="hold-transition login-page">
+  <div class="login-box">
+    <div class="login-box-body">
+      <div class="login-logo">
+        <a href="http://200.145.153.1/nsac/home"><b>NSac</b> Online</a>
+      </div>
+      <p class="login-box-msg">Entre para iniciar uma nova sessão</p>
+      <form action="http://200.145.153.1/nsac/login" method="post">
+        <input type="hidden" name="_token" value="SYNTHETIC_CSRF_TOKEN_40_CHARACTERS_LONG1">
+        <div class="form-group has-feedback">
+          <input type="email" name="email" class="form-control" placeholder="Email" value="">
+          <span class="glyphicon glyphicon-envelope form-control-feedback"></span>
+        </div>
+        <div class="form-group has-feedback">
+          <input type="password" name="password" class="form-control" placeholder="Senha">
+          <span class="glyphicon glyphicon-lock form-control-feedback"></span>
+        </div>
+        <div class="row">
+          <div class="col-xs-8">
+            <div class="checkbox icheck">
+              <label><input type="checkbox" name="remember"> Lembrar-me</label>
+            </div>
+          </div>
+          <div class="col-xs-4">
+            <button type="submit" class="btn btn-primary btn-block btn-flat">Entrar</button>
+          </div>
+        </div>
+      </form>
+      <div class="auth-links">
+        <a href="http://200.145.153.1/nsac/password/reset" class="text-center">Esqueci minha senha</a><br>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,14 @@
+/target
+.env
+.env.*
+secrets/
+*firebase-adminsdk*.json
+google-services.json
+app/node_modules/
+app/dist/
+app/android/app/build/
+app/android/build/
+app/android/.gradle/
+app/android/capacitor-cordova-android-plugins/build/
+*.log
+.DS_Store

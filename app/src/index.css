@@ -1,0 +1,475 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  max-width: 100vw;
+  overflow-x: hidden;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--m3-background, #0d0d0d);
+  color: var(--m3-on-background, #f5f5f5);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition:
+    background-color 240ms cubic-bezier(0.2, 0, 0, 1),
+    color 240ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* When Material You Redesign is active, switch global typography to Outfit/Nunito */
+html[data-design-system='material-you'],
+html[data-design-system='material-you'] body {
+  font-family: 'Outfit', 'Nunito', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* In Default (OpenAI Editorial) Design System, use crisp tabular Inter / Newsreader Serif / JetBrains Mono */
+html[data-design-system='default'] {
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+}
+
+.openai-serif-display {
+  font-family: 'Newsreader', 'Source Serif Pro', Georgia, ui-serif, serif !important;
+  font-weight: 400 !important;
+  letter-spacing: -0.02em !important;
+  line-height: 1.08 !important;
+}
+
+code {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* Responsive Shell Layout */
+.nsac-shell-layout {
+  display: flex;
+  min-height: 100dvh;
+  width: 100%;
+}
+
+.nsac-desktop-rail {
+  width: 256px;
+  flex-shrink: 0;
+  padding: 18px 14px;
+  display: none;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+}
+
+.nsac-main-viewport {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+.nsac-top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  min-height: 60px;
+  padding: calc(env(safe-area-inset-top, 0px) + 6px) 14px 6px;
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  transform: translateZ(0);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.nsac-page-content {
+  width: 100%;
+  max-width: 1380px;
+  margin: 0 auto;
+  padding: 16px 12px calc(env(safe-area-inset-bottom, 0px) + 104px);
+  overflow-x: hidden;
+}
+
+/* Floating Bottom Navigation Bar on Mobile (GPU-composited frosted glass blur) */
+.nsac-floating-bottom-pill {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+  transform: translate3d(-50%, 0, 0);
+  width: calc(100% - 16px);
+  max-width: 480px;
+  height: 66px;
+  border-radius: 9999px;
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px;
+  overflow: hidden;
+  z-index: 50;
+}
+
+@media (min-width: 920px) {
+  .nsac-desktop-rail {
+    display: flex;
+  }
+
+  .nsac-top-bar {
+    display: none !important;
+  }
+
+  .nsac-floating-bottom-pill {
+    display: none;
+  }
+
+  .mobile-only-btn {
+    display: none !important;
+  }
+
+  .nsac-page-content {
+    padding: 22px 24px 48px;
+  }
+}
+
+/*
+ * IMPORTANT: At 100%, transform MUST be `none` so `.m3-page-transition` never creates
+ * a containing block that traps `position: fixed` descendants.
+ */
+@keyframes m3PageFancySlide {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.m3-page-transition {
+  animation: m3PageFancySlide 320ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* Staggered List Entry Choreography for Segmented Cards & Table Rows */
+@keyframes m3CardStaggerEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.m3-segmented-card {
+  animation: m3CardStaggerEnter 300ms cubic-bezier(0.2, 0, 0, 1) both;
+  will-change: border-radius, transform;
+}
+
+.m3-table-row-stagger {
+  animation: m3CardStaggerEnter 280ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+/* Centered Modal Portal Backdrop & Dialog Spring Animations */
+@keyframes m3BackdropFadeIn {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes m3ModalDialogSpring {
+  0% {
+    opacity: 0;
+    transform: translateY(18px) scale(0.95);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.m3-modal-backdrop {
+  animation: m3BackdropFadeIn 200ms cubic-bezier(0.2, 0, 0, 1) forwards;
+}
+
+.m3-modal-backdrop-exit {
+  animation: m3BackdropFadeOut 220ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  pointer-events: none;
+}
+
+.m3-modal-dialog-enter {
+  animation: m3ModalDialogSpring 320ms cubic-bezier(0.22, 1.15, 0.36, 1) forwards;
+}
+
+.m3-modal-dialog-exit {
+  animation: m3ModalDialogExit 220ms cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+
+@keyframes m3BackdropFadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes m3ModalDialogExit {
+  0% {
+    opacity: 1;
+    transform: none;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(18px) scale(0.95);
+  }
+}
+
+/* Official NSAC Table Styling (Readable on mobile + desktop) */
+.nsac-official-table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 12px;
+  scrollbar-width: thin;
+}
+
+html[data-design-system='material-you'] .nsac-official-table-wrapper {
+  border-radius: 28px;
+}
+
+.nsac-official-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 820px;
+}
+
+.nsac-official-table th,
+.nsac-official-table td {
+  padding: 12px 10px;
+  vertical-align: middle;
+}
+
+@media (max-width: 919px) {
+  .nsac-official-table {
+    min-width: 540px;
+  }
+
+  .nsac-official-table th,
+  .nsac-official-table td {
+    padding: 8px 5px;
+  }
+
+  .nsac-official-table .sticky-col {
+    min-width: 54px !important;
+    max-width: 64px;
+    font-size: 0.76rem !important;
+  }
+
+  .nsac-official-table.nsac-table-full-names {
+    min-width: 780px;
+  }
+
+  .nsac-official-table.nsac-table-full-names .sticky-col {
+    min-width: 155px !important;
+    max-width: 200px;
+    font-size: 0.84rem !important;
+  }
+}
+
+@media (min-width: 920px) {
+  .nsac-official-table-wrapper {
+    overflow-x: hidden;
+  }
+
+  .nsac-official-table {
+    min-width: 0;
+    table-layout: auto;
+  }
+}
+
+.nsac-official-table .sticky-col {
+  position: sticky;
+  left: 0;
+  z-index: 5;
+}
+
+.nsac-official-table thead .sticky-col {
+  z-index: 7;
+}
+
+.nsac-table-row-interactive {
+  transition: background-color 150ms ease;
+  cursor: pointer;
+}
+
+.nsac-table-row-interactive:hover td {
+  filter: brightness(1.07);
+}
+
+@keyframes spin360 {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin-icon {
+  animation: spin360 900ms linear infinite;
+}
+
+.m3-connected-button-group::-webkit-scrollbar {
+  display: none;
+}
+
+/* ==========================================================================
+   FULL-SCREEN DESIGN SYSTEM TRANSITION ANIMATIONS
+   1. Padrão -> Material You: AOSP Material You Dynamic Color & Shape Morph
+   2. Material You -> Padrão: OpenAI Editorial Geometric Reticle & Bloom
+   ========================================================================== */
+
+@keyframes dsOverlayEnter {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes dsOverlayExit {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.03);
+  }
+}
+
+.ds-overlay-enter {
+  animation: dsOverlayEnter 220ms cubic-bezier(0.2, 0, 0, 1) forwards;
+}
+
+.ds-overlay-exit {
+  animation: dsOverlayExit 300ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* AOSP Material You Ripple & Shape Morphing */
+@keyframes aospRippleExpand {
+  0% {
+    transform: translate(-50%, -50%) scale(0.15);
+    opacity: 0.9;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(3.2);
+    opacity: 0;
+  }
+}
+
+.aosp-ripple-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 420px;
+  height: 420px;
+  border-radius: 9999px;
+  border: 2px solid;
+  pointer-events: none;
+}
+
+.aosp-ripple-1 {
+  animation: aospRippleExpand 1350ms cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+.aosp-ripple-2 {
+  animation: aospRippleExpand 1350ms cubic-bezier(0.16, 1, 0.3, 1) 260ms infinite;
+}
+
+@keyframes aospShapeRotateSpring {
+  0% {
+    transform: rotate(-45deg) scale(0.65);
+  }
+  45% {
+    transform: rotate(25deg) scale(1.1);
+  }
+  75% {
+    transform: rotate(-8deg) scale(0.97);
+  }
+  100% {
+    transform: rotate(0deg) scale(1);
+  }
+}
+
+.aosp-morph-stage {
+  position: relative;
+  width: 124px;
+  height: 124px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+
+.aosp-morph-svg {
+  animation: aospShapeRotateSpring 1100ms cubic-bezier(0.22, 1.25, 0.36, 1) forwards;
+}
+
+.aosp-center-glyph {
+  position: absolute;
+  font-family: 'Outfit', sans-serif;
+  font-weight: 800;
+  font-size: 2rem;
+  letter-spacing: -0.03em;
+}
+
+/* OpenAI Editorial Reticle & Geometric Petal Convergence */
+.openai-grid-reticle {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  pointer-events: none;
+}
+
+@keyframes openaiApertureSpin {
+  0% {
+    transform: rotate(-60deg) scale(0.78);
+    opacity: 0;
+  }
+  45% {
+    transform: rotate(12deg) scale(1.04);
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(0deg) scale(1);
+    opacity: 1;
+  }
+}
+
+.openai-aperture-stage {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.openai-aperture-svg {
+  animation: openaiApertureSpin 1050ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}

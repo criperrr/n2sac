@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>NSac Online - Bem-Vindo</title>
+</head>
+<body class="hold-transition skin-blue sidebar-mini">
+<div class="wrapper">
+  <header class="main-header">
+    <a href="http://200.145.153.1/nsac/home" class="logo">
+      <span class="logo-mini"><b>N</b>O</span>
+      <span class="logo-lg"><b>NSac</b> Online</span>
+    </a>
+    <nav class="navbar navbar-static-top" role="navigation">
+      <a href="#" class="sidebar-toggle fa5" data-toggle="push-menu" role="button">
+        <span class="sr-only">Trocar navegação</span>
+      </a>
+      <div class="navbar-custom-menu">
+        <ul class="nav navbar-nav">
+          <li>
+            <a href="#"><i class="fa fa-fw fa-power-off"></i> Sair</a>
+            <form id="logout-form" action="http://200.145.153.1/nsac/logout" method="POST" style="display: none;">
+              <input type="hidden" name="_token" value="SYNTHETIC_CSRF_TOKEN">
+            </form>
+          </li>
+        </ul>
+      </div>
+    </nav>
+  </header>
+
+  <aside class="main-sidebar">
+    <section class="sidebar">
+      <ul class="sidebar-menu" data-widget="tree">
+        <li class="header">MENU PRINCIPAL</li>
+        <li class="header">ALUNO</li>
+        <li class=""><a href="http://200.145.153.1/nsac/aluno/boletim">Boletim</a></li>
+        <li class=""><a href="http://200.145.153.1/nsac/aluno/atrasos">Atrasos</a></li>
+        <li class=""><a href="http://200.145.153.1/nsac/aluno/saidas">Saídas</a></li>
+        <li class=""><a href="http://200.145.153.1/nsac/aluno/ficha-avaliacao">Fichas de Avaliação</a></li>
+        <li class="header">GERAL</li>
+        <li class=""><a href="http://200.145.153.1/nsac/change_password">Alterar Senha</a></li>
+      </ul>
+    </section>
+  </aside>
+
+  <div class="content-wrapper">
+    <section class="content-header">
+      <h1>NSac Online <small>19/11/2026</small></h1>
+    </section>
+    <section class="content">
+      <div class="container-fluid">
+        <div class="row">
+          <a href="https://pt-br.facebook.com/cti.unesp.bauru/" style="color: black;">
+            <div class="col-md-12 col-lg-4">
+              <div class="info-box">
+                <span class="info-box-icon bg-aqua"><i class="fa fa-facebook"></i></span>
+                <div class="info-box-content">
+                  <span class="info-box-text">Facebook</span>
+                  <span class="info-box-number">Curta a página oficial do CTI no Facebook</span>
+                </div>
+              </div>
+            </div>
+          </a>
+          <a href="http://www.cti.feb.unesp.br/" style="color: black;">
+            <div class="col-md-12 col-lg-4">
+              <div class="info-box">
+                <span class="info-box-icon bg-aqua"><i class="fa fa-mouse-pointer"></i></span>
+                <div class="info-box-content">
+                  <span class="info-box-text">Site do CTI</span>
+                  <span class="info-box-number">Acesse o site oficial do colégio</span>
+                </div>
+              </div>
+            </div>
+          </a>
+          <a href="https://unesp.br" style="color: black;">
+            <div class="col-md-12 col-lg-4">
+              <div class="info-box">
+                <span class="info-box-icon bg-aqua"><i class="fa fa-university"></i></span>
+                <div class="info-box-content">
+                  <span class="info-box-text">Site da UNESP</span>
+                  <span class="info-box-number">Portal da Universidade Estadual Paulista</span>
+                </div>
+              </div>
+            </div>
+          </a>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+</body>
+</html>

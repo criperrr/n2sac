@@ -1,0 +1,10 @@
+target/
+app/node_modules/
+app/android/
+app/dist/
+.git/
+.agents/
+secrets/
+*.apk
+*.log
+.env

@@ -1,0 +1,50 @@
+[workspace]
+members = ["nsac-core", "nsac-server"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+todo = "warn"
+
+[workspace.dependencies]
+nsac-core = { path = "nsac-core" }
+aes-gcm = { version = "0.10.3", features = ["aes", "alloc", "getrandom", "zeroize"] }
+zeroize = { version = "1.8", features = ["derive"] }
+hex = "0.4"
+sha2 = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "charset", "http2", "form", "json"] }
+scraper = "0.29"
+unicode-normalization = "0.1"
+tracing = "0.1"
+url = "2.5"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+wiremock = "0.6"
+axum = { version = "0.8", features = ["macros"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "migrate", "macros", "chrono", "json"] }
+moka = { version = "0.12", features = ["future"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+rand = "0.10"
+uuid = { version = "1", features = ["v4", "serde"] }
+jsonwebtoken = { version = "12", features = ["aws_lc_rs"] }
+dotenvy = "0.15"
+http-body-util = "0.1"
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"

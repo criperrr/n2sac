@@ -1,0 +1,75 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: n2sac-postgres
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-n2sac}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-n2sac_prod_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-nsac_server}
+    volumes:
+      - n2sac_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-n2sac} -d ${POSTGRES_DB:-nsac_server}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  nsac-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+    image: n2sac-server:latest
+    container_name: n2sac-server
+    network_mode: host
+    restart: unless-stopped
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HTTP_BIND: 0.0.0.0:3000
+      RUST_LOG: ${RUST_LOG:-info,nsac_server=info,nsac_core=info}
+      DATABASE_URL: postgres://${POSTGRES_USER:-n2sac}:${POSTGRES_PASSWORD:-n2sac_prod_pass}@127.0.0.1:5432/${POSTGRES_DB:-nsac_server}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      SERVICE_API_KEYS: ${SERVICE_API_KEYS:-}
+      DISCORD_APPLICATION_ID: ${DISCORD_APPLICATION_ID:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      FCM_ENABLED: ${FCM_ENABLED:-true}
+      FCM_PROJECT_ID: ${FCM_PROJECT_ID:-n2sac-7b9dc}
+    volumes:
+      - ./secrets/firebase-service-account.json:/secrets/firebase-service-account.json:ro
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      network: host
+    image: n2sac-web:latest
+    container_name: n2sac-web
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 15s
+    depends_on:
+      nsac-server:
+        condition: service_healthy
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: n2sac-cloudflared
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 15s
+    depends_on:
+      web:
+        condition: service_started
+      nsac-server:
+        condition: service_healthy
+    command: ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8080"]
+
+volumes:
+  n2sac_pgdata:
