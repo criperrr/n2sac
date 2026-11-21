@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ExpressiveModal, MetricTile, ModalHeader } from '../components/expressive/ExpressiveModal';
+import { ExpressiveModal, MetricTile, ModalHeader, useTransformOrigin } from '../components/expressive/ExpressiveModal';
 import {
   Search,
   TrendingUp,
@@ -9,7 +9,6 @@ import {
   Award,
   X,
   SlidersHorizontal,
-  BookOpen,
   Users,
   Calendar,
   ChevronRight,
@@ -23,24 +22,8 @@ import {
   Minus,
   RotateCcw,
   ArrowUpDown,
-  Sigma,
-  Atom,
-  FlaskConical,
-  Dna,
-  Landmark,
-  Globe,
-  Brain,
-  Languages,
-  Code2,
-  Database,
-  Cpu,
-  Wrench,
-  Briefcase,
-  GitBranch,
-  Dumbbell,
-  Palette,
-  AppWindow,
 } from 'lucide-react';
+import { renderSubjectIcon, stripAccents } from '../utils/subjectIcons';
 import type { AllYearsResponse, FullGrades, UnifiedBimesterData, YearInfo } from '../api/types';
 import { useM3Theme } from '../theme/ThemeContext';
 import {
@@ -51,6 +34,9 @@ import {
   ExpressiveSegmentedCard,
   IconShapeContainer,
 } from '../components/expressive/ExpressivePrimitives';
+import { useBackLayer } from '../navigation/backStack';
+import { MorphingLoadingState } from '../components/expressive/ShapeMorph';
+import { Expandable } from '../components/expressive/Expandable';
 
 type BimesterViewMode = 'overview' | '1' | '2' | '3' | '4' | 'compare' | 'recovery';
 type BoletimLayoutMode = 'table' | 'cards' | 'grid' | 'comparative';
@@ -98,13 +84,6 @@ const LAYOUT_STORAGE_KEY = 'n2sac_boletim_layout_v1';
 const CTI_PASSING_POINTS_TOTAL = 24.0;
 const CTI_MAX_POINTS_TOTAL = 40.0;
 const CTI_PASSING_AVERAGE = 6.0;
-
-function stripAccents(str: string): string {
-  return str
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
-}
 
 function levenshteinDistance(a: string, b: string): number {
   const m = a.length;
@@ -181,78 +160,6 @@ function classifySubjectArea(subjectName: string): SubjectAreaKey {
     return 'linguagens';
   }
   return 'tecnicas';
-}
-
-/**
- * Adaptive, keyword-based subject icon resolver covering standard Brazilian high school
- * and CTI technical courses (Informática, Eletrônica, Mecânica), with safe fallback to BookOpen.
- */
-export function renderSubjectIcon(subjectName: string, size = 19): React.ReactNode {
-  const n = stripAccents(subjectName);
-  if (n.includes('matemat') || n.includes('calculo') || n.includes('estatist')) {
-    return <Sigma size={size} />;
-  }
-  if (n.includes('fisic') && !n.includes('educacao')) {
-    return <Atom size={size} />;
-  }
-  if (n.includes('quimic')) {
-    return <FlaskConical size={size} />;
-  }
-  if (n.includes('biolog')) {
-    return <Dna size={size} />;
-  }
-  if (n.includes('histor')) {
-    return <Landmark size={size} />;
-  }
-  if (n.includes('geograf')) {
-    return <Globe size={size} />;
-  }
-  if (n.includes('filosof')) {
-    return <Brain size={size} />;
-  }
-  if (n.includes('sociolog')) {
-    return <Users size={size} />;
-  }
-  if (n.includes('ingles') || n.includes('espanhol') || n.includes('idioma')) {
-    return <Languages size={size} />;
-  }
-  if (n.includes('educacao fisica') || n.includes('ed. fisica')) {
-    return <Dumbbell size={size} />;
-  }
-  if (n.includes('arte')) {
-    return <Palette size={size} />;
-  }
-  if (n.includes('banco de dados') || n.includes('sql')) {
-    return <Database size={size} />;
-  }
-  if (n.includes('analise') || n.includes('projeto de sistemas') || n.includes('engenharia de software')) {
-    return <GitBranch size={size} />;
-  }
-  if (n.includes('aplicativo') || n.includes('interface') || n.includes('web')) {
-    return <AppWindow size={size} />;
-  }
-  if (
-    n.includes('programac') ||
-    n.includes('algoritm') ||
-    n.includes('java') ||
-    n.includes('php') ||
-    n.includes('c#') ||
-    n.includes('python') ||
-    n.includes('redes') ||
-    n.includes('sistemas operacionais')
-  ) {
-    return <Code2 size={size} />;
-  }
-  if (n.includes('eletron') || n.includes('eletric') || n.includes('microcontrol') || n.includes('circuito')) {
-    return <Cpu size={size} />;
-  }
-  if (n.includes('mecan') || n.includes('usinag') || n.includes('desenho') || n.includes('cnc')) {
-    return <Wrench size={size} />;
-  }
-  if (n.includes('gestao') || n.includes('negocio') || n.includes('empreend') || n.includes('administ')) {
-    return <Briefcase size={size} />;
-  }
-  return <BookOpen size={size} />;
 }
 
 export interface SubjectAcademicAnalysis {
@@ -522,9 +429,11 @@ export const BoletimScreen: React.FC<{
   const [minGradeFilter, setMinGradeFilter] = useState<number>(0);
   const [onlyBelowClassAvg, setOnlyBelowClassAvg] = useState(false);
   const [showAdvancedFilterMenu, setShowAdvancedFilterMenu] = useState(false);
+  useBackLayer(showAdvancedFilterMenu, () => setShowAdvancedFilterMenu(false));
   const [collapsedFilterGroups, setCollapsedFilterGroups] = useState<Record<string, boolean>>({});
   const [advFilters, setAdvFilters] = useState<AdvancedBoletimFilters>(DEFAULT_ADVANCED_FILTERS);
   const [selectedSubjectName, setSelectedSubjectName] = useState<string | null>(null);
+  const { originRef: subjectOriginRef, onClickCapture: captureSubjectOrigin } = useTransformOrigin();
 
   const toggleFilterGroup = (groupKey: string) => {
     setCollapsedFilterGroups((prev) => ({ ...prev, [groupKey]: !prev[groupKey] }));
@@ -942,9 +851,7 @@ export const BoletimScreen: React.FC<{
           border: `1px solid ${tokens.outlineVariant}`,
         }}
       >
-        <div style={{ fontWeight: 700, fontSize: '1.1rem', color: tokens.primary }}>
-          Carregando boletim...
-        </div>
+        <MorphingLoadingState label="Carregando boletim..." minHeight={180} />
       </div>
     );
   }
@@ -968,7 +875,10 @@ export const BoletimScreen: React.FC<{
   const deltaPositive = yearAnalytics.delta >= 0;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: isMaterialYou ? 18 : 14 }}>
+    <div
+      onClickCapture={captureSubjectOrigin}
+      style={{ display: 'flex', flexDirection: 'column', gap: isMaterialYou ? 18 : 14 }}
+    >
       {/* 1. HERO CARD */}
       <section
         style={{
@@ -1611,7 +1521,7 @@ export const BoletimScreen: React.FC<{
         </div>
 
         {/* Deep Multi-Criteria Advanced Filter Drawer */}
-        {showAdvancedFilterMenu && (
+        <Expandable open={showAdvancedFilterMenu}>
           <div
             style={{
               marginTop: 4,
@@ -2102,7 +2012,7 @@ export const BoletimScreen: React.FC<{
               </div>
             </div>
           </div>
-        )}
+        </Expandable>
       </section>
 
       {/* 3. RENDER SELECTED GRADE LAYOUT */}
@@ -2149,7 +2059,7 @@ export const BoletimScreen: React.FC<{
           onSelectSubject={(name) => setSelectedSubjectName(name)}
         />
       ) : (
-        <section style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <section data-no-size-morph style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {filteredAnalyses.map((analysis, idx) => (
             <SubjectSegmentedRow
               key={analysis.subject.subjectName}
@@ -2170,6 +2080,7 @@ export const BoletimScreen: React.FC<{
           analysis={selectedAnalysis}
           classCode={activeYear.title}
           year={activeYear.year}
+          originEl={subjectOriginRef.current}
           onClose={() => setSelectedSubjectName(null)}
         />
       )}
@@ -2386,7 +2297,7 @@ const OfficialNsacTableView: React.FC<{
           </button>
         </div>
       )}
-      <div className="nsac-official-table-wrapper" style={{ borderRadius: 0, border: 'none' }}>
+      <div data-no-size-morph className="nsac-official-table-wrapper" style={{ borderRadius: 0, border: 'none' }}>
         <table
           className={`nsac-official-table ${useFullNamesMobile ? 'nsac-table-full-names' : ''}`}
         >
@@ -3146,6 +3057,7 @@ const CompactBentoGridView: React.FC<{
 
   return (
     <section
+      data-no-size-morph
       style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fill, minmax(285px, 1fr))',
@@ -3356,7 +3268,7 @@ const ComparativeXRayView: React.FC<{
   }, [analyses]);
 
   return (
-    <section style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+    <section data-no-size-morph style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       {sorted.map((item, idx) => {
         const delta = item.deltaVsClass ?? 0;
         const isPositive = delta >= 0;
@@ -3500,8 +3412,9 @@ const SubjectDetailsModal: React.FC<{
   analysis: SubjectAcademicAnalysis;
   classCode: string;
   year: number;
+  originEl: HTMLElement | null;
   onClose: () => void;
-}> = ({ analysis, classCode, year, onClose }) => {
+}> = ({ analysis, classCode, year, originEl, onClose }) => {
   const { tokens } = useM3Theme();
   const { subject } = analysis;
   const goalPositive = analysis.goalStatus === 'passed_24' || analysis.goalStatus === 'completed_pass';
@@ -3513,7 +3426,7 @@ const SubjectDetailsModal: React.FC<{
       : tokens.onGradeWarningContainer;
 
   return (
-    <ExpressiveModal ariaLabel={`Detalhes de ${subject.subjectName}`} onClose={onClose}>
+    <ExpressiveModal ariaLabel={`Detalhes de ${subject.subjectName}`} onClose={onClose} originEl={originEl}>
       {(close) => (
       <>
         <ModalHeader

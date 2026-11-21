@@ -6,7 +6,7 @@ REMOTE_USER="${N2SAC_USER:-criper}"
 REMOTE_HOST="${N2SAC_HOST:-192.168.1.150}"
 REMOTE_DIR="${N2SAC_REMOTE_DIR:-/opt/n2sac}"
 
-echo "[deploy-server] Syncing backend to ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}..."
+echo "[deploy-server] Syncing backend sources to ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}..."
 rsync -az --delete \
   --exclude 'target/' \
   --exclude 'app/node_modules/' \
@@ -18,8 +18,11 @@ rsync -az --delete \
   --exclude '.env' \
   "${ROOT_DIR}/" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/"
 
-echo "[deploy-server] Rebuilding & restarting nsac-server..."
-ssh "${REMOTE_USER}@${REMOTE_HOST}" "cd '${REMOTE_DIR}' && docker compose build nsac-server && docker compose up -d --no-deps nsac-server"
+echo "[deploy-server] Building n2sac-server:latest locally (fast BuildKit)..."
+docker build -f "${ROOT_DIR}/Dockerfile" -t n2sac-server:latest "${ROOT_DIR}"
+
+echo "[deploy-server] Streaming pre-built n2sac-server:latest image to ${REMOTE_USER}@${REMOTE_HOST}..."
+docker save n2sac-server:latest | gzip | ssh "${REMOTE_USER}@${REMOTE_HOST}" "gunzip | docker load && cd '${REMOTE_DIR}' && docker compose up -d --no-deps --no-build nsac-server"
 
 echo "[deploy-server] Verifying /api/v1/health..."
 sleep 3

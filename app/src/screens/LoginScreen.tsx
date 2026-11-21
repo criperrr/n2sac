@@ -18,6 +18,7 @@ import {
   ExpressiveSegmentedCard,
   IconShapeContainer,
 } from '../components/expressive/ExpressivePrimitives';
+import { MorphingShapeIndicator } from '../components/expressive/ShapeMorph';
 
 export const LoginScreen: React.FC<{
   onLoginSuccess: (session: LoginResponse) => void;
@@ -109,7 +110,7 @@ export const LoginScreen: React.FC<{
             }}
           >
             <div style={{ transform: isMaterialYou ? `rotate(${heroRotation}deg)` : undefined, flexShrink: 0 }}>
-              <IconShapeContainer size={isMaterialYou ? 56 : 44} active={loading}>
+              <IconShapeContainer size={isMaterialYou ? 56 : 44} active={loading} morphing={loading}>
                 <GraduationCap size={isMaterialYou ? 27 : 21} />
               </IconShapeContainer>
             </div>
@@ -296,7 +297,7 @@ export const LoginScreen: React.FC<{
               size="lg"
               fullWidth
               disabled={loading}
-              icon={<Sparkles size={18} />}
+              icon={loading ? <MorphingShapeIndicator size={20} label="Entrando" /> : <Sparkles size={18} />}
             >
               {loading ? 'Entrando...' : 'Entrar'}
             </EnhancedMorphButton>

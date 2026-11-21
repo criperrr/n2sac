@@ -526,3 +526,38 @@ async fn location_points_to_login_handles_nsac_without_trailing_slash() {
     assert_eq!(login_err.code, ErrorCode::InvalidNsacCredentials);
 }
 
+/// The NSAC serves the ficha as a PDF: it is passed through byte for byte (never as text),
+/// and a not-yet-released bimester (redirect to another ficha) is `None`.
+#[tokio::test]
+async fn ficha_pdf_is_passed_through_and_unreleased_is_none() {
+    let server = MockServer::start().await;
+    let base_url = format!("{}/nsac", server.uri());
+    let cookies = NsacSessionCookies::new("xsrf_p", "sess_p", None).unwrap();
+    // Binary payload with bytes that are invalid UTF-8: reading it as text would corrupt it.
+    let pdf: Vec<u8> = [b"%PDF-1.7\n".as_slice(), &[0xE2, 0xE3, 0xCF, 0xD3, 0xFF, 0x00, 0x9C], b"\n%%EOF\n"].concat();
+
+    Mock::given(method("GET"))
+        .and(path("/nsac/aluno/ficha-avaliacao/1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "application/pdf")
+                .set_body_bytes(pdf.clone()),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/nsac/aluno/ficha-avaliacao/2"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("{}/nsac/aluno/ficha-avaliacao/1", server.uri())),
+        )
+        .mount(&server)
+        .await;
+
+    let client = NsacClient::new(base_url).unwrap();
+    let (bytes, _) = client.fetch_ficha_avaliacao_pdf(&cookies, 1).await.unwrap();
+    assert_eq!(bytes.as_deref(), Some(pdf.as_slice()));
+    let (unreleased, _) = client.fetch_ficha_avaliacao_pdf(&cookies, 2).await.unwrap();
+    assert!(unreleased.is_none());
+    assert!(client.fetch_ficha_avaliacao_pdf(&cookies, 5).await.is_err());
+}

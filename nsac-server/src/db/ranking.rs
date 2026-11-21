@@ -10,6 +10,14 @@ pub struct RankingPreferences {
     pub opted_in: bool,
     pub hide_name: bool,
     pub display_name: Option<String>,
+    /// Show my profile photo next to my ranking entry (never while `hide_name`).
+    pub show_avatar: bool,
+    /// Let other ranking participants open my profile (never while `hide_name`).
+    pub public_profile: bool,
+    /// Findable in student search even without showing the name in the ranking.
+    pub discoverable: bool,
+    /// Never exposed anywhere: out of the ranking, search and profiles.
+    pub invisible: bool,
     pub has_decided: bool,
     pub updated_at: DateTime<Utc>,
 }
@@ -20,6 +28,10 @@ struct RankingPrefRow {
     opted_in: bool,
     hide_name: bool,
     display_name: Option<String>,
+    show_avatar: bool,
+    public_profile: bool,
+    discoverable: bool,
+    invisible: bool,
     has_decided: bool,
     updated_at: DateTime<Utc>,
 }
@@ -31,6 +43,10 @@ impl From<RankingPrefRow> for RankingPreferences {
             opted_in: r.opted_in,
             hide_name: r.hide_name,
             display_name: r.display_name,
+            show_avatar: r.show_avatar,
+            public_profile: r.public_profile,
+            discoverable: r.discoverable,
+            invisible: r.invisible,
             has_decided: r.has_decided,
             updated_at: r.updated_at,
         }
@@ -44,6 +60,9 @@ struct LeaderboardSqlRow {
     class_code: Option<String>,
     hide_name: bool,
     display_name: Option<String>,
+    show_avatar: bool,
+    /// `updated_at` (epoch seconds) of the stored profile photo, when there is one.
+    avatar_version: Option<i64>,
     personal_average: f64,
     class_average: f64,
     delta_vs_class: f64,
@@ -59,6 +78,10 @@ pub struct LeaderboardEntry {
     pub is_me: bool,
     pub display_label: String,
     pub is_anonymous: bool,
+    /// Versioned `/api/v1/profiles/{id}/avatar?v=…` path, only when the student shows a photo.
+    pub avatar_url: Option<String>,
+    /// Whether the requester may open this student's profile.
+    pub has_public_profile: bool,
     pub class_code: String,
     pub personal_average: f64,
     pub class_average: f64,
@@ -121,40 +144,11 @@ impl RankingRepo {
         Self { pool }
     }
 
-    pub async fn ensure_table(&self) -> Result<(), ServerError> {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS account_ranking_preferences (
-                account_id BIGINT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
-                opted_in BOOLEAN NOT NULL DEFAULT FALSE,
-                hide_name BOOLEAN NOT NULL DEFAULT FALSE,
-                display_name TEXT NULL,
-                has_decided BOOLEAN NOT NULL DEFAULT FALSE,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_ranking_prefs_opted_in
-                ON account_ranking_preferences (opted_in)
-                WHERE opted_in = TRUE
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
     pub async fn get_preferences(&self, account_id: i64) -> Result<RankingPreferences, ServerError> {
-        self.ensure_table().await?;
         let row = sqlx::query_as::<_, RankingPrefRow>(
             r#"
-            SELECT account_id, opted_in, hide_name, display_name, has_decided, updated_at
+            SELECT account_id, opted_in, hide_name, display_name, show_avatar, public_profile,
+                   discoverable, invisible, has_decided, updated_at
             FROM account_ranking_preferences
             WHERE account_id = $1
             "#,
@@ -170,6 +164,10 @@ impl RankingRepo {
                 opted_in: false,
                 hide_name: false,
                 display_name: None,
+                show_avatar: false,
+                public_profile: false,
+                discoverable: false,
+                invisible: false,
                 has_decided: false,
                 updated_at: Utc::now(),
             },
@@ -182,8 +180,23 @@ impl RankingRepo {
         opted_in: bool,
         hide_name: bool,
         display_name: Option<&str>,
+        show_avatar: Option<bool>,
+        public_profile: Option<bool>,
     ) -> Result<RankingPreferences, ServerError> {
-        self.ensure_table().await?;
+        if opted_in {
+            let is_invisible: bool = sqlx::query_scalar(
+                "SELECT invisible FROM account_ranking_preferences WHERE account_id = $1",
+            )
+            .bind(account_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .unwrap_or(false);
+            if is_invisible {
+                return Err(ServerError::invalid_params(
+                    "Desative o modo invisível no seu Perfil para participar do ranking.",
+                ));
+            }
+        }
         let cleaned_name = display_name
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -192,25 +205,101 @@ impl RankingRepo {
         let row = sqlx::query_as::<_, RankingPrefRow>(
             r#"
             INSERT INTO account_ranking_preferences (
-                account_id, opted_in, hide_name, display_name, has_decided, updated_at
+                account_id, opted_in, hide_name, display_name, show_avatar, public_profile,
+                visibility_customized, has_decided, updated_at
             )
-            VALUES ($1, $2, $3, $4, TRUE, NOW())
+            -- Joining the ranking turns photo + public profile on by default…
+            VALUES (
+                $1, $2, $3, $4,
+                COALESCE($5::boolean, $2), COALESCE($6::boolean, $2),
+                ($5::boolean IS NOT NULL OR $6::boolean IS NOT NULL),
+                TRUE, NOW()
+            )
             ON CONFLICT (account_id) DO UPDATE SET
                 opted_in = EXCLUDED.opted_in,
                 hide_name = EXCLUDED.hide_name,
                 display_name = EXCLUDED.display_name,
+                -- …on every re-join too, unless the student has set these switches by hand:
+                -- then their choice survives leaving and re-joining the ranking.
+                show_avatar = CASE
+                    WHEN $5::boolean IS NOT NULL THEN $5::boolean
+                    WHEN EXCLUDED.opted_in AND NOT account_ranking_preferences.opted_in
+                         AND NOT account_ranking_preferences.visibility_customized THEN TRUE
+                    ELSE account_ranking_preferences.show_avatar
+                END,
+                public_profile = CASE
+                    WHEN $6::boolean IS NOT NULL THEN $6::boolean
+                    WHEN EXCLUDED.opted_in AND NOT account_ranking_preferences.opted_in
+                         AND NOT account_ranking_preferences.visibility_customized THEN TRUE
+                    ELSE account_ranking_preferences.public_profile
+                END,
+                visibility_customized = account_ranking_preferences.visibility_customized
+                    OR $5::boolean IS NOT NULL OR $6::boolean IS NOT NULL,
                 has_decided = TRUE,
                 updated_at = NOW()
-            RETURNING account_id, opted_in, hide_name, display_name, has_decided, updated_at
+            RETURNING account_id, opted_in, hide_name, display_name, show_avatar, public_profile,
+                      discoverable, invisible, has_decided, updated_at
             "#,
         )
         .bind(account_id)
         .bind(opted_in)
         .bind(hide_name)
         .bind(cleaned_name)
+        .bind(show_avatar)
+        .bind(public_profile)
         .fetch_one(&self.pool)
         .await?;
 
+        Ok(RankingPreferences::from(row))
+    }
+
+    /// Account-wide exposure settings. Invisible mode wins over everything: it leaves the ranking,
+    /// turns search, photo and public profile off, and counts as a hand-made visibility choice
+    /// (so re-joining the ranking later doesn't silently re-expose the photo/profile).
+    pub async fn set_privacy(
+        &self,
+        account_id: i64,
+        discoverable: Option<bool>,
+        invisible: Option<bool>,
+    ) -> Result<RankingPreferences, ServerError> {
+        let row = sqlx::query_as::<_, RankingPrefRow>(
+            r#"
+            INSERT INTO account_ranking_preferences (
+                account_id, discoverable, invisible, visibility_customized, has_decided, updated_at
+            )
+            VALUES (
+                $1,
+                COALESCE($2::boolean, FALSE) AND NOT COALESCE($3::boolean, FALSE),
+                COALESCE($3::boolean, FALSE),
+                COALESCE($3::boolean, FALSE),
+                COALESCE($3::boolean, FALSE),
+                NOW()
+            )
+            ON CONFLICT (account_id) DO UPDATE SET
+                invisible = COALESCE($3::boolean, account_ranking_preferences.invisible),
+                discoverable = CASE
+                    WHEN COALESCE($3::boolean, account_ranking_preferences.invisible) THEN FALSE
+                    ELSE COALESCE($2::boolean, account_ranking_preferences.discoverable)
+                END,
+                opted_in = account_ranking_preferences.opted_in
+                    AND NOT COALESCE($3::boolean, account_ranking_preferences.invisible),
+                show_avatar = account_ranking_preferences.show_avatar
+                    AND NOT COALESCE($3::boolean, account_ranking_preferences.invisible),
+                public_profile = account_ranking_preferences.public_profile
+                    AND NOT COALESCE($3::boolean, account_ranking_preferences.invisible),
+                visibility_customized = account_ranking_preferences.visibility_customized
+                    OR COALESCE($3::boolean, FALSE),
+                has_decided = account_ranking_preferences.has_decided OR COALESCE($3::boolean, FALSE),
+                updated_at = NOW()
+            RETURNING account_id, opted_in, hide_name, display_name, show_avatar, public_profile,
+                      discoverable, invisible, has_decided, updated_at
+            "#,
+        )
+        .bind(account_id)
+        .bind(discoverable)
+        .bind(invisible)
+        .fetch_one(&self.pool)
+        .await?;
         Ok(RankingPreferences::from(row))
     }
 
@@ -242,7 +331,6 @@ impl RankingRepo {
         subject_contains: Option<&str>,
         compare_with_account_id: Option<i64>,
     ) -> Result<ComparisonSummaryResponse, ServerError> {
-        self.ensure_table().await?;
         let my_prefs = self.get_preferences(requester_account_id).await?;
 
         let class_filter: Option<String> = match scope {
@@ -260,48 +348,73 @@ impl RankingRepo {
             .filter(|s| !s.is_empty())
             .map(|s| format!("%{}%", s.to_lowercase()));
 
+        // Aggregate grades per student first and join `account_profiles` only on the <=250
+        // output rows so PostgreSQL never includes the TOASTed `avatar_data_url` blob in
+        // GROUP BY / Sort keys.
         let rows = sqlx::query_as::<_, LeaderboardSqlRow>(
             r#"
+            WITH student_stats AS (
+                SELECT
+                    a.id AS account_id,
+                    a.nsac_email,
+                    a.class_code,
+                    rp.hide_name,
+                    rp.display_name,
+                    rp.show_avatar,
+                    ROUND(AVG(g.grade)::numeric, 2)::float8 AS personal_average,
+                    ROUND(COALESCE(AVG(NULLIF(g.average_grade, 0)), 0)::numeric, 2)::float8 AS class_average,
+                    ROUND((AVG(g.grade) - COALESCE(AVG(NULLIF(g.average_grade, 0)), 0))::numeric, 2)::float8 AS delta_vs_class,
+                    COUNT(g.id)::bigint AS posted_bimesters_count,
+                    COUNT(DISTINCT g.subject_id)::bigint AS subjects_count,
+                    COALESCE(SUM(g.absences), 0)::bigint AS total_absences
+                FROM accounts a
+                JOIN account_ranking_preferences rp
+                    ON rp.account_id = a.id AND rp.opted_in = TRUE AND rp.invisible = FALSE
+                JOIN grades g
+                    ON g.account_id = a.id
+                JOIN subjects s
+                    ON s.id = g.subject_id
+                JOIN school_years sy
+                    ON sy.id = s.school_year_id
+                WHERE a.active = TRUE
+                  AND sy.year = $1
+                  AND g.grade IS NOT NULL
+                  AND NOT (
+                      g.grade = 0
+                      AND COALESCE(g.average_grade, 0) = 0
+                      AND COALESCE(g.recovery_code, 'NAC') = 'NAC'
+                  )
+                  AND ($2::smallint IS NULL OR g.bimester = $2)
+                  AND ($3::text IS NULL OR LOWER(s.name) LIKE $3)
+                  AND (
+                      $4::text IS NULL
+                      OR ($5::text = 'class' AND UPPER(COALESCE(a.class_code, '')) = $4)
+                      OR ($5::text = 'course' AND UPPER(COALESCE(a.class_code, '')) LIKE $4)
+                  )
+                GROUP BY a.id, a.nsac_email, a.class_code, rp.hide_name, rp.display_name, rp.show_avatar
+                HAVING COUNT(g.id) > 0
+                ORDER BY personal_average DESC, delta_vs_class DESC, total_absences ASC, a.id ASC
+                LIMIT 250
+            )
             SELECT
-                a.id AS account_id,
-                a.nsac_email,
-                a.class_code,
-                rp.hide_name,
-                rp.display_name,
-                ROUND(AVG(g.grade)::numeric, 2)::float8 AS personal_average,
-                ROUND(COALESCE(AVG(NULLIF(g.average_grade, 0)), 0)::numeric, 2)::float8 AS class_average,
-                ROUND((AVG(g.grade) - COALESCE(AVG(NULLIF(g.average_grade, 0)), 0))::numeric, 2)::float8 AS delta_vs_class,
-                COUNT(g.id)::bigint AS posted_bimesters_count,
-                COUNT(DISTINCT g.subject_id)::bigint AS subjects_count,
-                COALESCE(SUM(g.absences), 0)::bigint AS total_absences
-            FROM accounts a
-            JOIN account_ranking_preferences rp
-                ON rp.account_id = a.id AND rp.opted_in = TRUE
-            JOIN grades g
-                ON g.account_id = a.id
-            JOIN subjects s
-                ON s.id = g.subject_id
-            JOIN school_years sy
-                ON sy.id = s.school_year_id
-            WHERE a.active = TRUE
-              AND sy.year = $1
-              AND g.grade IS NOT NULL
-              AND NOT (
-                  g.grade = 0
-                  AND COALESCE(g.average_grade, 0) = 0
-                  AND COALESCE(g.recovery_code, 'NAC') = 'NAC'
-              )
-              AND ($2::smallint IS NULL OR g.bimester = $2)
-              AND ($3::text IS NULL OR LOWER(s.name) LIKE $3)
-              AND (
-                  $4::text IS NULL
-                  OR ($5::text = 'class' AND UPPER(COALESCE(a.class_code, '')) = $4)
-                  OR ($5::text = 'course' AND UPPER(COALESCE(a.class_code, '')) LIKE $4)
-              )
-            GROUP BY a.id, a.nsac_email, a.class_code, rp.hide_name, rp.display_name
-            HAVING COUNT(g.id) > 0
-            ORDER BY personal_average DESC, delta_vs_class DESC, total_absences ASC, a.id ASC
-            LIMIT 250
+                st.account_id,
+                st.nsac_email,
+                st.class_code,
+                st.hide_name,
+                st.display_name,
+                st.show_avatar,
+                CASE WHEN ap.avatar_data_url IS NOT NULL
+                     THEN EXTRACT(EPOCH FROM ap.updated_at)::bigint END AS avatar_version,
+                st.personal_average,
+                st.class_average,
+                st.delta_vs_class,
+                st.posted_bimesters_count,
+                st.subjects_count,
+                st.total_absences
+            FROM student_stats st
+            LEFT JOIN account_profiles ap
+                ON ap.account_id = st.account_id
+            ORDER BY st.personal_average DESC, st.delta_vs_class DESC, st.total_absences ASC, st.account_id ASC
             "#,
         )
         .bind(school_year)
@@ -334,6 +447,11 @@ impl RankingRepo {
                 is_me,
                 display_label,
                 is_anonymous: row.hide_name,
+                avatar_url: (is_me || (row.show_avatar && !row.hide_name))
+                    .then_some(row.avatar_version)
+                    .flatten()
+                    .map(|v| avatar_path(row.account_id, v)),
+                has_public_profile: is_me || !row.hide_name,
                 class_code: row.class_code.unwrap_or_else(|| "CTI".to_string()),
                 personal_average: row.personal_average,
                 class_average: row.class_average,
@@ -501,7 +619,12 @@ impl RankingRepo {
     }
 }
 
-fn format_student_label(
+/// Versioned avatar path: a new photo gets a new URL, so clients may cache it forever.
+pub fn avatar_path(account_id: i64, version: i64) -> String {
+    format!("/api/v1/profiles/{account_id}/avatar?v={version}")
+}
+
+pub(crate) fn format_student_label(
     account_id: i64,
     email: &str,
     hide_name: bool,

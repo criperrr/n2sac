@@ -4,16 +4,31 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const REFRESH_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
-const REFRESH_MAX_REQUESTS: usize = 10; // 10 requests per 5-minute sliding window
+const REFRESH_MAX_REQUESTS: usize = 10; // 10 requests per 5-minute sliding window per route bucket
+const MAX_REFRESH_TRACKED_KEYS: usize = 4_096;
 
-fn check_refresh_rate_limit(account_id: i64) -> Result<(), u64> {
-    static LIMITER: OnceLock<Mutex<HashMap<i64, VecDeque<Instant>>>> = OnceLock::new();
+type RefreshRateMap = HashMap<(i64, String), VecDeque<Instant>>;
+
+fn check_refresh_rate_limit(account_id: i64, bucket: &str) -> Result<(), u64> {
+    static LIMITER: OnceLock<Mutex<RefreshRateMap>> = OnceLock::new();
     let map = LIMITER.get_or_init(|| Mutex::new(HashMap::new()));
     let Ok(mut guard) = map.lock() else {
         return Ok(());
     };
     let now = Instant::now();
-    let queue = guard.entry(account_id).or_default();
+    if guard.len() >= MAX_REFRESH_TRACKED_KEYS {
+        guard.retain(|_, q| {
+            while let Some(&front) = q.front() {
+                if now.duration_since(front) >= REFRESH_WINDOW {
+                    q.pop_front();
+                } else {
+                    break;
+                }
+            }
+            !q.is_empty()
+        });
+    }
+    let queue = guard.entry((account_id, bucket.to_string())).or_default();
     while let Some(&front) = queue.front() {
         if now.duration_since(front) >= REFRESH_WINDOW {
             queue.pop_front();
@@ -218,14 +233,13 @@ pub async fn get_boletim(
     let query_filter = QueryFilter::from_query_pairs(filter_pairs)?;
 
     let cached = if target_query.refresh {
-        if let Err(retry_secs) = check_refresh_rate_limit(target.account_id) {
+        if let Err(retry_secs) = check_refresh_rate_limit(target.account_id, "boletim") {
             let msg = format!(
                 "Limite de 10 atualizações a cada 5 minutos atingido. Tente novamente em {retry_secs}s."
             );
-            return Err(ServerError::with_user_message(
-                nsac_core::error::ErrorCode::InvalidParams,
-                msg.clone(),
+            return Err(ServerError::rate_limited(
                 msg,
+                "Boletim manual refresh rate limit exceeded",
             ));
         }
         fetch_and_persist_boletim(&state, target.account_id).await?
@@ -304,6 +318,18 @@ where
 
     let route_key_str = route_key.as_str();
     let cache_key = (target.account_id, route_key_str.clone());
+
+    if target_query.refresh
+        && let Err(retry_secs) = check_refresh_rate_limit(target.account_id, &route_key_str)
+    {
+        let msg = format!(
+            "Limite de 10 atualizações a cada 5 minutos atingido. Tente novamente em {retry_secs}s."
+        );
+        return Err(ServerError::rate_limited(
+            msg,
+            "Auxiliary route manual refresh rate limit exceeded",
+        ));
+    }
 
     let (payload_json, etag) = if !target_query.refresh
         && let Some(hit) = state.caches.snapshots.get(&cache_key).await
@@ -478,3 +504,120 @@ pub async fn get_ficha_detail(
     )
     .await
 }
+
+/// Short-lived links to a ficha PDF, so it can be opened in the phone's browser (which can't
+/// send the app's bearer token). The PDF is fetched once when the link is created and kept in
+/// memory only until the link expires.
+const FICHA_PDF_LINK_TTL: Duration = Duration::from_secs(120);
+const FICHA_PDF_MAX_ENTRIES: usize = 128;
+
+struct FichaPdfLink {
+    account_id: i64,
+    bimester: u8,
+    pdf: Arc<Vec<u8>>,
+    created: Instant,
+}
+
+static FICHA_PDF_LINKS: OnceLock<Mutex<HashMap<String, FichaPdfLink>>> = OnceLock::new();
+
+fn ficha_pdf_links() -> std::sync::MutexGuard<'static, HashMap<String, FichaPdfLink>> {
+    FICHA_PDF_LINKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+#[derive(Serialize)]
+struct FichaPdfLinkPayload {
+    /// Path (on the API host) that serves the PDF without authentication until it expires.
+    url: String,
+    expires_in_secs: u64,
+}
+
+/// POST /api/v1/nsac/ficha-avaliacao/{id}/pdf-link
+pub async fn create_ficha_pdf_link(
+    State(state): State<AppState>,
+    DualAuth(principal): DualAuth,
+    Path(raw_id): Path<String>,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Response, ServerError> {
+    let id = parse_ficha_id(&raw_id)?;
+    let pairs = parse_query_pairs(raw_query.as_deref());
+    let target_query = parse_target_query(&pairs)?;
+    let target = resolve_target_account(
+        &state,
+        &principal,
+        SCOPE_NSAC_READ,
+        target_query.account_id,
+        target_query.discord_id.as_deref(),
+    )
+    .await?;
+
+    let nsac = state.nsac.clone();
+    let pdf = execute_nsac_with_refresh(&state, target.account_id, move |cookies| {
+        let client = nsac.clone();
+        async move { client.fetch_ficha_avaliacao_pdf(&cookies, id).await }
+    })
+    .await?
+    .ok_or_else(|| ServerError::not_found("Ficha not released by the NSAC yet"))?;
+
+    let token = hex::encode(rand::random::<[u8; 24]>());
+    {
+        let mut links = ficha_pdf_links();
+        links.retain(|_, l| l.created.elapsed() < FICHA_PDF_LINK_TTL);
+        // One live link per account and bimester is enough.
+        links.retain(|_, l| !(l.account_id == target.account_id && l.bimester == id));
+        if links.len() >= FICHA_PDF_MAX_ENTRIES
+            && let Some(oldest_key) = links
+                .iter()
+                .min_by_key(|(_, l)| l.created)
+                .map(|(k, _)| k.clone())
+        {
+            links.remove(&oldest_key);
+        }
+        links.insert(
+            token.clone(),
+            FichaPdfLink { account_id: target.account_id, bimester: id, pdf: Arc::new(pdf), created: Instant::now() },
+        );
+    }
+    Ok(crate::http::envelope::ok_json(FichaPdfLinkPayload {
+        url: format!("/api/v1/nsac/ficha-avaliacao/pdf/{token}"),
+        expires_in_secs: FICHA_PDF_LINK_TTL.as_secs(),
+    }))
+}
+
+/// GET /api/v1/nsac/ficha-avaliacao/pdf/{token} — the original PDF, inline (open/print/save).
+pub async fn get_ficha_pdf(Path(token): Path<String>) -> Response {
+    use axum::http::{HeaderValue, StatusCode, header};
+    use axum::response::IntoResponse;
+
+    let link = {
+        let mut links = ficha_pdf_links();
+        links.retain(|_, l| l.created.elapsed() < FICHA_PDF_LINK_TTL);
+        links
+            .get(&token)
+            .map(|l| (l.bimester, l.pdf.clone()))
+    };
+    let Some((bimester, pdf)) = link else {
+        let page = "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width\">\
+            <title>n²sac</title><body style=\"font-family:sans-serif;padding:24px\">\
+            <h2>Link expirado</h2><p>Volte ao n²sac e toque em <b>Abrir PDF</b> de novo.</p></body>";
+        let mut res = (StatusCode::NOT_FOUND, page).into_response();
+        res.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
+        res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return res;
+    };
+
+    let mut res = (StatusCode::OK, pdf.as_ref().clone()).into_response();
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/pdf"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    if let Ok(v) = HeaderValue::from_str(&format!(
+        "inline; filename=\"ficha-avaliacao-{bimester}-bimestre.pdf\""
+    )) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    res
+}
+

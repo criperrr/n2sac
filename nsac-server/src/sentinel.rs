@@ -647,14 +647,6 @@ pub async fn poll_due_classes_once(
         class_state.next_check_at = now + chrono::Duration::seconds(hot_int);
         state.sentinel().upsert_class_state(&class_state).await?;
 
-        crate::discord::broadcast_discord_class_grade_update(
-            &state.db,
-            &class_state.class_code,
-            &new_events,
-            Some(&sentinel_boletim),
-        )
-        .await;
-
         let mut unique_subjects = BTreeSet::new();
         let mut unique_bimesters = BTreeSet::new();
         for ev in &new_events {
@@ -674,21 +666,9 @@ pub async fn poll_due_classes_once(
         state.caches.invalidate_boletim(chosen_sentinel_id).await;
         report.fanout_students_updated += 1;
 
-        // Fan-out to remaining students in the class and send opt-in private Discord DMs
+        // Fan-out to remaining students in the class
         for student in &active_accounts {
-            if student.id == chosen_sentinel_id {
-                if let Some(ref did) = student.discord_id {
-                    let _ = crate::discord::send_discord_personal_grade_dm(
-                        &state.db,
-                        student.id,
-                        did,
-                        &class_state.class_code,
-                        &new_events,
-                        &sentinel_boletim,
-                    )
-                    .await;
-                }
-            } else {
+            if student.id != chosen_sentinel_id {
                 match fetch_account_boletim_with_refresh(state, student.id, now).await {
                     Ok(mut student_boletim) => {
                         canonicalize_boletim(&mut student_boletim);
@@ -698,18 +678,6 @@ pub async fn poll_due_classes_once(
                             .await?;
                         state.caches.invalidate_boletim(student.id).await;
                         report.fanout_students_updated += 1;
-
-                        if let Some(ref did) = student.discord_id {
-                            let _ = crate::discord::send_discord_personal_grade_dm(
-                                &state.db,
-                                student.id,
-                                did,
-                                &class_state.class_code,
-                                &new_events,
-                                &student_boletim,
-                            )
-                            .await;
-                        }
                     }
                     Err(err) => {
                         tracing::warn!(

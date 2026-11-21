@@ -1,9 +1,11 @@
 pub mod accounts;
 pub mod auth;
 pub mod boletim;
+pub mod profiles;
 pub mod ranking;
 pub mod sentinel;
 pub mod snapshots;
+pub mod social;
 
 pub use accounts::{
     AccountRepo, AccountSummary, CTI_CLASSES, DecryptedAccountSecrets, normalize_class_code,
@@ -18,3 +20,4 @@ pub use ranking::{
 };
 pub use sentinel::{GradePostingEvent, NewGradePostingEvent, SentinelClassState, SentinelRepo};
 pub use snapshots::{SnapshotRecord, SnapshotRepo, compute_strong_etag};
+pub use social::SocialRepo;

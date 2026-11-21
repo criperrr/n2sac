@@ -1,5 +1,6 @@
+import { Capacitor } from '@capacitor/core';
 import { formatVersionLabel } from '../appVersion';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Sun,
   Moon,
@@ -16,8 +17,11 @@ import {
 import {
   applyOtaUpdate,
   checkAllUpdates,
+  fetchLatestServerVersion,
   getEffectiveAppVersion,
+  getInstalledNativeVersion,
   type NativeUpdateInfo,
+  type ServerVersionSnapshot,
 } from '../updater/autoUpdater';
 import {
   APERTURE_PALETTE_PRESETS,
@@ -36,6 +40,8 @@ import {
   IconShapeContainer,
   MainSwitchPillCard,
 } from '../components/expressive/ExpressivePrimitives';
+import { MorphingShapeIndicator } from '../components/expressive/ShapeMorph';
+import { useMinimumBusy } from '../theme/motion';
 
 export const AdaptiveStudioScreen: React.FC<{
   detectedClassCode: string | null;
@@ -65,19 +71,31 @@ export const AdaptiveStudioScreen: React.FC<{
     settings.mode === 'adaptive' ? 'system' : settings.mode;
 
   const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const showChecking = useMinimumBusy(checkingUpdate);
   const [updateResult, setUpdateResult] = useState<NativeUpdateInfo | null>(null);
   const [updateStatusMsg, setUpdateStatusMsg] = useState<string | null>(null);
+  const [latestServer, setLatestServer] = useState<ServerVersionSnapshot>({ version: null, apkVersion: null });
+  const isNative = Capacitor.isNativePlatform();
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchLatestServerVersion().then((snap) => {
+      if (!cancelled) setLatestServer(snap);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleCheckUpdates = async () => {
     setCheckingUpdate(true);
     setUpdateStatusMsg(null);
     try {
-      const found = await checkAllUpdates();
+      const [found, latest] = await Promise.all([checkAllUpdates(), fetchLatestServerVersion()]);
+      setLatestServer(latest);
       setUpdateResult(found);
       if (found) {
-        setUpdateStatusMsg(
-          `Nova versão ${found.version} encontrada (${found.source === 'server-ota' ? 'Servidor OTA' : 'GitHub Releases'}).`
-        );
+        setUpdateStatusMsg(`Nova versão ${formatVersionLabel(found.version)} disponível.`);
       } else {
         setUpdateStatusMsg(`Você já está na versão mais recente (${formatVersionLabel(getEffectiveAppVersion())}).`);
       }
@@ -87,6 +105,12 @@ export const AdaptiveStudioScreen: React.FC<{
       setCheckingUpdate(false);
     }
   };
+
+  const formatShortV = (v: string | null) => (v ? `v${v.replace(/^v/i, '')}` : '—');
+  const installedWebV = formatShortV(getEffectiveAppVersion());
+  const installedApkV = formatShortV(getInstalledNativeVersion());
+  const latestWebV = formatShortV(latestServer.version);
+  const latestApkV = latestServer.apkVersion ? formatShortV(latestServer.apkVersion) : null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: isMaterialYou ? 18 : 20 }}>
@@ -102,8 +126,28 @@ export const AdaptiveStudioScreen: React.FC<{
                 <div style={{ fontWeight: 700, fontSize: '1rem' }}>
                   Atualizações do App
                 </div>
-                <div style={{ fontSize: '0.8rem', color: tokens.onSurfaceVariant }}>
-                  Versão instalada: <strong>{formatVersionLabel(getEffectiveAppVersion())}</strong> • Servidor OTA & GitHub Releases
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'auto 1fr',
+                    columnGap: 10,
+                    rowGap: 2,
+                    fontSize: '0.8rem',
+                    color: tokens.onSurfaceVariant,
+                    lineHeight: 1.4,
+                    marginTop: 2,
+                  }}
+                >
+                  <span>Versão instalada:</span>
+                  <strong style={{ color: tokens.onSurface, fontVariantNumeric: 'tabular-nums' }}>
+                    {installedWebV}
+                    {isNative ? ` (apk ${installedApkV})` : ''}
+                  </strong>
+                  <span>Última versão:</span>
+                  <strong style={{ color: tokens.onSurface, fontVariantNumeric: 'tabular-nums' }}>
+                    {latestWebV}
+                    {isNative && latestApkV ? ` (apk ${latestApkV})` : ''}
+                  </strong>
                 </div>
               </div>
             </div>
@@ -126,8 +170,8 @@ export const AdaptiveStudioScreen: React.FC<{
                 cursor: checkingUpdate ? 'wait' : 'pointer',
               }}
             >
-              <RefreshCw size={14} />
-              <span>{checkingUpdate ? 'Verificando...' : 'Verificar atualizações'}</span>
+              {showChecking ? <MorphingShapeIndicator size={15} label="Verificando" /> : <RefreshCw size={14} />}
+              <span>{showChecking ? 'Verificando...' : 'Verificar atualizações'}</span>
             </button>
           </div>
 

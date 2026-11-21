@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   computeSegmentedCorners,
   M3_SPRINGS,
   useAnimatedCorners,
   useSpringValue,
 } from '../../theme/springPhysics';
+import { useShapeMorph } from './ShapeMorph';
 import { useM3Theme } from '../../theme/ThemeContext';
 import type { IconShapeVariant } from '../../theme/materialYou';
 
@@ -31,11 +32,132 @@ export const AnimatedNumber: React.FC<{
   const formatted = animated.toFixed(decimals);
   const sign = showPlusSign && animated > 0.01 ? '+' : '';
   return (
-    <span className={className} style={{ fontVariantNumeric: 'tabular-nums' }}>
+    <span className={className} data-no-size-morph style={{ fontVariantNumeric: 'tabular-nums' }}>
       {prefix}
       {sign}
       {formatted}
       {suffix}
+    </span>
+  );
+};
+
+/**
+ * Number that starts at 0 and springs to its value the first time it scrolls into view
+ * (same `numberGauge` spring as the year switch on the home screen). Mutates `textContent`
+ * directly in rAF (only when the formatted string changes) so dozens of numbers animating
+ * simultaneously cause zero React re-renders.
+ */
+export const RevealNumber: React.FC<{
+  value: number;
+  decimals?: number;
+  prefix?: string;
+  suffix?: string;
+  showPlusSign?: boolean;
+  delayMs?: number;
+  /** Fires once, when the number starts revealing (e.g. to grow a bar alongside it). */
+  onReveal?: () => void;
+}> = ({ value, decimals = 1, prefix = '', suffix = '', showPlusSign = false, delayMs = 0, onReveal }) => {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [revealed, setRevealed] = useState(false);
+  const onRevealRef = useRef(onReveal);
+  onRevealRef.current = onReveal;
+  const springRef = useRef({ position: 0, velocity: 0, lastText: '' });
+
+  const format = (num: number) => {
+    const sign = showPlusSign && num > 0.01 ? '+' : '';
+    return `${prefix}${sign}${num.toFixed(decimals)}${suffix}`;
+  };
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || revealed) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setRevealed(true);
+      return;
+    }
+    let timer = 0;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return;
+        observer.disconnect();
+        timer = window.setTimeout(() => {
+          setRevealed(true);
+          onRevealRef.current?.();
+        }, delayMs);
+      },
+      { threshold: 0.4 }
+    );
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(timer);
+    };
+  }, [revealed, delayMs]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const target = revealed ? value : 0;
+    const { stiffness, dampingRatio } = M3_SPRINGS.numberGauge;
+    const damping = dampingRatio * 2 * Math.sqrt(stiffness);
+    const precision = 0.005;
+
+    const write = (num: number) => {
+      const text = format(num);
+      if (text !== springRef.current.lastText) {
+        springRef.current.lastText = text;
+        el.textContent = text;
+      }
+    };
+
+    if (
+      Math.abs(springRef.current.velocity) < precision &&
+      Math.abs(target - springRef.current.position) < precision
+    ) {
+      springRef.current.position = target;
+      springRef.current.velocity = 0;
+      write(target);
+      return;
+    }
+
+    let active = true;
+    let rafId = 0;
+    let lastTime = performance.now();
+
+    const step = (now: number) => {
+      if (!active) return;
+      const dt = Math.min((now - lastTime) / 1000, 0.032);
+      lastTime = now;
+
+      const displacement = springRef.current.position - target;
+      const acceleration = -stiffness * displacement - damping * springRef.current.velocity;
+      springRef.current.velocity += acceleration * dt;
+      springRef.current.position += springRef.current.velocity * dt;
+
+      if (
+        Math.abs(springRef.current.velocity) < precision &&
+        Math.abs(target - springRef.current.position) < precision
+      ) {
+        springRef.current.position = target;
+        springRef.current.velocity = 0;
+        write(target);
+        return;
+      }
+
+      write(springRef.current.position);
+      rafId = requestAnimationFrame(step);
+    };
+
+    rafId = requestAnimationFrame(step);
+    return () => {
+      active = false;
+      cancelAnimationFrame(rafId);
+    };
+  }, [revealed, value, decimals, prefix, suffix, showPlusSign]);
+
+  return (
+    <span ref={ref} data-no-size-morph style={{ fontVariantNumeric: 'tabular-nums' }}>
+      {format(revealed ? springRef.current.position : 0)}
     </span>
   );
 };
@@ -60,6 +182,8 @@ export const IconShapeContainer: React.FC<{
   contentColor?: string;
   size?: number;
   active?: boolean;
+  /** Continuously morphs the container through the M3 Expressive shape sequence (busy state). */
+  morphing?: boolean;
 }> = ({
   children,
   shapeVariant,
@@ -67,6 +191,7 @@ export const IconShapeContainer: React.FC<{
   contentColor,
   size = 44,
   active = false,
+  morphing = false,
 }) => {
   const { settings, isMaterialYou, tokens } = useM3Theme();
   const [randomShape] = useState<Exclude<IconShapeVariant, 'random'>>(
@@ -79,6 +204,9 @@ export const IconShapeContainer: React.FC<{
   const fg = contentColor ?? (isMaterialYou ? tokens.onPrimaryContainer : tokens.onSurface);
   const rotation = useSpringValue(isMaterialYou && active ? 30 : 0, M3_SPRINGS.lessSpringy);
   const scale = useSpringValue(isMaterialYou && active ? 1.08 : 1, M3_SPRINGS.springy);
+  const morphPathRef = useRef<SVGPathElement>(null);
+  const morphGroupRef = useRef<SVGGElement>(null);
+  useShapeMorph(morphPathRef, morphGroupRef, morphing && isMaterialYou, 44);
 
   if (!isMaterialYou) {
     const editorialRadius = size >= 48 ? 12 : 10;
@@ -163,7 +291,13 @@ export const IconShapeContainer: React.FC<{
           transform: `rotate(${rotation}deg) scale(${scale})`,
         }}
       >
-        {renderShapeSvg()}
+        {morphing ? (
+          <g ref={morphGroupRef}>
+            <path ref={morphPathRef} fill={bg} />
+          </g>
+        ) : (
+          renderShapeSvg()
+        )}
       </svg>
       <div style={{ position: 'relative', zIndex: 1, display: 'flex' }}>{children}</div>
     </div>

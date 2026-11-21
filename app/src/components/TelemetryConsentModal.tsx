@@ -1,12 +1,17 @@
 import React from 'react';
+import { usePageScrollLock } from '../theme/scrollLock';
 import { Activity, ShieldCheck } from 'lucide-react';
 import { useM3Theme } from '../theme/ThemeContext';
 import { EnhancedMorphButton } from './expressive/ExpressivePrimitives';
+import { useBackLayer } from '../navigation/backStack';
 
 export const TelemetryConsentModal: React.FC<{
   onDecide: (granted: boolean) => void;
 }> = ({ onDecide }) => {
   const { tokens, isMaterialYou } = useM3Theme();
+  // Mandatory choice: back is consumed so nothing underneath closes.
+  useBackLayer(true, () => {}, { kind: 'blocking' });
+  usePageScrollLock();
 
   return (
     <div
@@ -18,9 +23,7 @@ export const TelemetryConsentModal: React.FC<{
         position: 'fixed',
         inset: 0,
         zIndex: 10000,
-        backgroundColor: 'rgba(0, 0, 0, 0.72)',
-        backdropFilter: 'blur(10px)',
-        WebkitBackdropFilter: 'blur(10px)',
+        backgroundColor: 'rgba(0, 0, 0, 0.76)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',

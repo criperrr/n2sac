@@ -75,6 +75,7 @@ struct FcmMessage<'a> {
     token: &'a str,
     notification: FcmNotification,
     data: FcmData<'a>,
+    android: FcmAndroidConfig,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,10 +85,52 @@ struct FcmNotification {
 }
 
 #[derive(Debug, Serialize)]
+struct FcmAndroidConfig {
+    priority: &'static str,
+    notification: FcmAndroidNotification,
+}
+
+#[derive(Debug, Serialize)]
+struct FcmAndroidNotification {
+    channel_id: &'static str,
+    sound: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 struct FcmData<'a> {
     class_code: &'a str,
     subjects: String,
     bimesters: String,
+}
+
+#[derive(Debug, Serialize)]
+struct FcmSocialSendRequest<'a> {
+    message: FcmSocialMessage<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct FcmSocialMessage<'a> {
+    token: &'a str,
+    notification: FcmNotification,
+    data: FcmSocialData<'a>,
+    android: FcmAndroidConfig,
+}
+
+#[derive(Debug, Serialize)]
+struct FcmSocialData<'a> {
+    kind: &'a str,
+    actor_id: String,
+    actor_label: &'a str,
+}
+
+fn social_android_channel_and_tag(kind: &str, actor_id: i64) -> (&'static str, String) {
+    match kind {
+        "chat_message" => ("n2sac-social-messages", format!("chat-{actor_id}")),
+        "friendship" => ("n2sac-social-friends", format!("friend-{actor_id}")),
+        _ => ("n2sac-social-follows", format!("follow-{actor_id}")),
+    }
 }
 
 impl FcmClient {
@@ -160,6 +203,14 @@ impl FcmClient {
                     subjects: subjects_joined,
                     bimesters: bimesters_joined,
                 },
+                android: FcmAndroidConfig {
+                    priority: "high",
+                    notification: FcmAndroidNotification {
+                        channel_id: "n2sac-grades",
+                        sound: "default",
+                        tag: Some(format!("grades-{class_code}")),
+                    },
+                },
             },
         };
 
@@ -222,6 +273,82 @@ impl FcmClient {
             detail = %detail,
             "FCM push delivery returned transient error"
         );
+        Ok(FcmDeliveryOutcome::TransientFailure { status, detail })
+    }
+
+    pub async fn send_social_notification(
+        &self,
+        fcm_token: &str,
+        title: &str,
+        body: &str,
+        kind: &str,
+        actor_id: i64,
+        actor_label: &str,
+    ) -> Result<FcmDeliveryOutcome, ServerError> {
+        if !self.config.enabled {
+            return Ok(FcmDeliveryOutcome::Disabled);
+        }
+        let Some(endpoint_url) = self.config.endpoint_url.as_deref() else {
+            return Ok(FcmDeliveryOutcome::Disabled);
+        };
+        let access_token = match self.acquire_access_token().await {
+            Ok(token) => token,
+            Err(outcome) => return Ok(outcome),
+        };
+        let (channel_id, tag) = social_android_channel_and_tag(kind, actor_id);
+        let payload = FcmSocialSendRequest {
+            message: FcmSocialMessage {
+                token: fcm_token,
+                notification: FcmNotification {
+                    title: title.to_string(),
+                    body: body.to_string(),
+                },
+                data: FcmSocialData {
+                    kind,
+                    actor_id: actor_id.to_string(),
+                    actor_label,
+                },
+                android: FcmAndroidConfig {
+                    priority: "high",
+                    notification: FcmAndroidNotification {
+                        channel_id,
+                        sound: "default",
+                        tag: Some(tag),
+                    },
+                },
+            },
+        };
+        let response = match self
+            .http
+            .post(endpoint_url)
+            .bearer_auth(&access_token)
+            .json(&payload)
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                tracing::warn!(kind = kind, error = %err, "FCM social push request failed");
+                return Ok(FcmDeliveryOutcome::TransientFailure {
+                    status: 0,
+                    detail: format!("FCM HTTP request error: {err}"),
+                });
+            }
+        };
+        let status = response.status().as_u16();
+        let body_text = response.text().await.unwrap_or_default();
+        if (200..=299).contains(&status) {
+            let message_id = serde_json::from_str::<serde_json::Value>(&body_text)
+                .ok()
+                .and_then(|v| v.get("name").and_then(serde_json::Value::as_str).map(str::to_owned))
+                .unwrap_or_else(|| "ok".to_string());
+            return Ok(FcmDeliveryOutcome::Delivered { message_id });
+        }
+        if status == 404 || is_unregistered_response(&body_text) {
+            return Ok(FcmDeliveryOutcome::Unregistered);
+        }
+        let detail = extract_error_detail(&body_text).unwrap_or(body_text);
+        tracing::warn!(kind = kind, status = status, detail = %detail, "FCM social push transient error");
         Ok(FcmDeliveryOutcome::TransientFailure { status, detail })
     }
 

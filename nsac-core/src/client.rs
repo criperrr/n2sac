@@ -29,6 +29,11 @@ enum RawRouteResponse {
         body: String,
         rotated: Option<NsacSessionCookies>,
     },
+    /// Binary PDF body (the ficha-avaliacao detail is served as a dompdf PDF).
+    Pdf {
+        bytes: Vec<u8>,
+        rotated: Option<NsacSessionCookies>,
+    },
     Redirect {
         location: String,
         rotated: Option<NsacSessionCookies>,
@@ -93,7 +98,11 @@ fn location_points_to_ficha_list(location: &str) -> bool {
         .unwrap_or("")
         .trim_end_matches('/')
         .to_ascii_lowercase();
-    trimmed.ends_with("/ficha-avaliacao")
+    // The list itself, or another ficha (the NSAC redirects a not-yet-released bimester to an
+    // available one, e.g. /ficha-avaliacao/2 → /ficha-avaliacao/1).
+    let tail = trimmed.rsplit("/ficha-avaliacao").next().unwrap_or("x");
+    trimmed.contains("/ficha-avaliacao")
+        && (tail.is_empty() || tail.trim_start_matches('/').chars().all(|c| c.is_ascii_digit()))
 }
 
 impl NsacClient {
@@ -457,13 +466,23 @@ impl NsacClient {
             )));
         }
 
-        let body = response.text().await.map_err(|e| {
+        let is_pdf_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim().to_ascii_lowercase().starts_with("application/pdf"));
+        let bytes = response.bytes().await.map_err(|e| {
             AppError::with_source(
                 crate::error::ErrorCode::NsacUnavailable,
                 format!("Failed to read NSAC route '{path}' response body"),
                 e,
             )
         })?;
+        // Reading as text would mangle binary bodies: PDFs are returned as raw bytes.
+        if is_pdf_type || bytes.starts_with(b"%PDF-") {
+            return Ok(RawRouteResponse::Pdf { bytes: bytes.to_vec(), rotated });
+        }
+        let body = String::from_utf8_lossy(&bytes).into_owned();
 
         if looks_like_login_page(&body) {
             return Err(AppError::auth_expired(format!(
@@ -480,6 +499,7 @@ impl NsacClient {
     ) -> Result<(HomeInfo, Option<NsacSessionCookies>), AppError> {
         match self.get_route_raw(cookies, "home").await? {
             RawRouteResponse::Ok { body, rotated } => Ok((parse_home(&body)?, rotated)),
+            RawRouteResponse::Pdf { .. } => Err(AppError::nsac_unavailable("Unexpected PDF response")),
             RawRouteResponse::Redirect { .. } => Err(AppError::auth_expired(
                 "NSAC /home returned unexpected redirect",
             )),
@@ -492,6 +512,7 @@ impl NsacClient {
     ) -> Result<(AllYearsResponse, Option<NsacSessionCookies>), AppError> {
         match self.get_route_raw(cookies, "aluno/boletim").await? {
             RawRouteResponse::Ok { body, rotated } => Ok((parse_boletim(&body)?, rotated)),
+            RawRouteResponse::Pdf { .. } => Err(AppError::nsac_unavailable("Unexpected PDF response")),
             RawRouteResponse::Redirect { .. } => Err(AppError::auth_expired(
                 "NSAC /aluno/boletim returned unexpected redirect",
             )),
@@ -504,6 +525,7 @@ impl NsacClient {
     ) -> Result<(Vec<AtrasoRecord>, Option<NsacSessionCookies>), AppError> {
         match self.get_route_raw(cookies, "aluno/atrasos").await? {
             RawRouteResponse::Ok { body, rotated } => Ok((parse_atrasos(&body)?, rotated)),
+            RawRouteResponse::Pdf { .. } => Err(AppError::nsac_unavailable("Unexpected PDF response")),
             RawRouteResponse::Redirect { .. } => Err(AppError::auth_expired(
                 "NSAC /aluno/atrasos returned unexpected redirect",
             )),
@@ -516,6 +538,7 @@ impl NsacClient {
     ) -> Result<(Vec<SaidaRecord>, Option<NsacSessionCookies>), AppError> {
         match self.get_route_raw(cookies, "aluno/saidas").await? {
             RawRouteResponse::Ok { body, rotated } => Ok((parse_saidas(&body)?, rotated)),
+            RawRouteResponse::Pdf { .. } => Err(AppError::nsac_unavailable("Unexpected PDF response")),
             RawRouteResponse::Redirect { .. } => Err(AppError::auth_expired(
                 "NSAC /aluno/saidas returned unexpected redirect",
             )),
@@ -530,6 +553,7 @@ impl NsacClient {
             RawRouteResponse::Ok { body, rotated } => {
                 Ok((parse_ficha_avaliacao_list(&body)?, rotated))
             }
+            RawRouteResponse::Pdf { .. } => Err(AppError::nsac_unavailable("Unexpected PDF response")),
             RawRouteResponse::Redirect { .. } => Err(AppError::auth_expired(
                 "NSAC /aluno/ficha-avaliacao returned unexpected redirect",
             )),
@@ -553,6 +577,9 @@ impl NsacClient {
                 let detail = parse_ficha_avaliacao_detail(&body, id)?;
                 Ok((Some(detail), rotated))
             }
+            RawRouteResponse::Pdf { .. } => Err(AppError::nsac_unavailable(
+                "Ficha detail is served as a PDF (use fetch_ficha_avaliacao_pdf)",
+            )),
             RawRouteResponse::Redirect { location, rotated } => {
                 if location_points_to_ficha_list(&location) {
                     Ok((None, rotated))
@@ -564,11 +591,47 @@ impl NsacClient {
             }
         }
     }
+
+    /// The ficha as the NSAC serves it: the original PDF (to open/print as is). `None` when the
+    /// bimester isn't released yet (the NSAC redirects to the list or to another ficha).
+    pub async fn fetch_ficha_avaliacao_pdf(
+        &self,
+        cookies: &NsacSessionCookies,
+        id: u8,
+    ) -> Result<(Option<Vec<u8>>, Option<NsacSessionCookies>), AppError> {
+        if !(1..=4).contains(&id) {
+            return Err(AppError::invalid_params(
+                "Invalid ficha-avaliacao bimester id: must be between 1 and 4",
+            ));
+        }
+        let route = format!("aluno/ficha-avaliacao/{id}");
+        match self.get_route_raw(cookies, &route).await? {
+            RawRouteResponse::Pdf { bytes, rotated } => Ok((Some(bytes), rotated)),
+            RawRouteResponse::Redirect { location, rotated } if location_points_to_ficha_list(&location) => {
+                Ok((None, rotated))
+            }
+            RawRouteResponse::Redirect { location, .. } => Err(AppError::nsac_unavailable(format!(
+                "Unexpected redirect from '{route}' to '{location}'"
+            ))),
+            RawRouteResponse::Ok { .. } => Err(AppError::nsac_unavailable(format!(
+                "Expected a PDF from '{route}', got HTML"
+            ))),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::location_points_to_login;
+    use super::{location_points_to_ficha_list, location_points_to_login};
+
+    #[test]
+    fn ficha_redirects_to_list_or_other_ficha_mean_not_released() {
+        assert!(location_points_to_ficha_list("http://200.145.153.1/nsac/aluno/ficha-avaliacao"));
+        assert!(location_points_to_ficha_list("/nsac/aluno/ficha-avaliacao/"));
+        assert!(location_points_to_ficha_list("http://200.145.153.1/nsac/aluno/ficha-avaliacao/1"));
+        assert!(!location_points_to_ficha_list("http://200.145.153.1/nsac/aluno/boletim"));
+        assert!(!location_points_to_ficha_list("/nsac/aluno/ficha-avaliacao/1/print"));
+    }
 
     #[test]
     fn location_points_to_login_normalizes_paths_and_ignores_query_params() {

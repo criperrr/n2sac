@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   GraduationCap,
   CalendarClock,
@@ -7,22 +7,29 @@ import {
   User,
   RefreshCw,
   LogOut,
+  Settings,
   PanelLeftClose,
   PanelLeftOpen,
 } from 'lucide-react';
 import { M3_SPRINGS, useSpringValue } from '../theme/springPhysics';
 import { useM3Theme } from '../theme/ThemeContext';
 import { IconShapeContainer } from './expressive/ExpressivePrimitives';
+import { MorphingShapeIndicator } from './expressive/ShapeMorph';
+import { MobilePullToRefreshContainer } from './expressive/WavyProgressIndicator';
+import { useMinimumBusy } from '../theme/motion';
+import { RefreshCooldownLabel } from './PollCountdown';
 
 const RAIL_COLLAPSED_KEY = 'nsac_rail_collapsed';
 
-export type AppTabId = 'boletim' | 'ranking' | 'frequencia' | 'sentinela' | 'studio';
+export type AppTabId = 'boletim' | 'ranking' | 'frequencia' | 'sentinela' | 'profile' | 'settings';
 
 interface NavTabItem {
   id: AppTabId;
   label: string;
   shortLabel: string;
   icon: React.ReactNode;
+  /** Mobile bottom bar shows only primary destinations; Settings opens from the top bar. */
+  inBottomBar: boolean;
 }
 
 export const NAV_TABS: NavTabItem[] = [
@@ -31,30 +38,42 @@ export const NAV_TABS: NavTabItem[] = [
     label: 'Boletim',
     shortLabel: 'Boletim',
     icon: <GraduationCap size={20} />,
+    inBottomBar: true,
   },
   {
     id: 'ranking',
     label: 'Ranking',
     shortLabel: 'Ranking',
     icon: <Trophy size={20} />,
+    inBottomBar: true,
   },
   {
     id: 'frequencia',
     label: 'Fichas & Frequência',
     shortLabel: 'Frequência',
     icon: <CalendarClock size={20} />,
+    inBottomBar: true,
   },
   {
     id: 'sentinela',
     label: 'Alertas & Conta',
     shortLabel: 'Alertas',
     icon: <Bell size={20} />,
+    inBottomBar: true,
   },
   {
-    id: 'studio',
+    id: 'profile',
     label: 'Perfil',
     shortLabel: 'Perfil',
     icon: <User size={20} />,
+    inBottomBar: true,
+  },
+  {
+    id: 'settings',
+    label: 'Configurações',
+    shortLabel: 'Config.',
+    icon: <Settings size={20} />,
+    inBottomBar: false,
   },
 ];
 
@@ -86,16 +105,16 @@ const ExpressiveNavItem: React.FC<{
       onPointerUp={() => setPressed(false)}
       onPointerLeave={() => setPressed(false)}
       style={{
-        flex: vertical ? '1 1 0' : undefined,
+        flex: vertical ? undefined : undefined,
         minWidth: 0,
-        width: vertical ? undefined : '100%',
+        width: '100%',
         display: 'flex',
         flexDirection: vertical ? 'column' : 'row',
         alignItems: 'center',
         justifyContent: vertical ? 'center' : 'flex-start',
-        textAlign: 'left',
+        textAlign: vertical ? 'center' : 'left',
         gap: vertical ? 3 : 12,
-        padding: vertical ? '6px 2px' : '2px 0',
+        padding: vertical ? '6px 0' : '2px 0',
         background: 'transparent',
         border: 'none',
         cursor: 'pointer',
@@ -178,8 +197,7 @@ export const ExpressiveNavigationShell: React.FC<{
   onSelectTab: (tab: AppTabId) => void;
   classCode: string | null;
   nsacEmail: string;
-  nextPollCountdown: number;
-  refreshCooldown: number;
+  refreshCooldownUntil: number | null;
   isRefreshing: boolean;
   lastHttpStatus?: 200 | 304 | null;
   onManualRefresh: () => void;
@@ -190,7 +208,7 @@ export const ExpressiveNavigationShell: React.FC<{
   onSelectTab,
   classCode,
   nsacEmail,
-  refreshCooldown,
+  refreshCooldownUntil,
   isRefreshing,
   onManualRefresh,
   onLogout,
@@ -215,7 +233,37 @@ export const ExpressiveNavigationShell: React.FC<{
       return next;
     });
   };
-  const refreshDisabled = refreshCooldown > 0 || isRefreshing;
+  const refreshDisabled = refreshCooldownUntil !== null || isRefreshing;
+  // Visual busy state lasts at least one full morph cycle so the indicator never just flashes.
+  const showRefreshing = useMinimumBusy(isRefreshing);
+
+  const topBarRef = useRef<HTMLElement>(null);
+
+  // Overlay pages read --nsac-rail-offset and --nsac-top-bar-height from :root, so mirror them there.
+  useEffect(() => {
+    document.documentElement.classList.toggle('nsac-rail-collapsed', railCollapsed);
+  }, [railCollapsed]);
+
+  useEffect(() => {
+    const el = topBarRef.current;
+    if (!el) return;
+    const sync = () => {
+      const height = Math.round(el.getBoundingClientRect().height);
+      if (height > 0) {
+        document.documentElement.style.setProperty('--nsac-top-bar-height', `${height}px`);
+      } else {
+        document.documentElement.style.removeProperty('--nsac-top-bar-height');
+      }
+    };
+    sync();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      document.documentElement.style.removeProperty('--nsac-top-bar-height');
+    };
+  }, []);
 
   return (
     <div className="nsac-shell-layout" style={{ backgroundColor: tokens.background, color: tokens.onBackground }}>
@@ -229,7 +277,7 @@ export const ExpressiveNavigationShell: React.FC<{
       >
         <div className="nsac-rail-header">
           <div className="nsac-rail-fade nsac-rail-brand">
-            <IconShapeContainer size={46} active={isRefreshing}>
+            <IconShapeContainer size={46} active={showRefreshing} morphing={showRefreshing}>
               <GraduationCap size={22} />
             </IconShapeContainer>
             <div style={{ minWidth: 0 }}>
@@ -347,8 +395,8 @@ export const ExpressiveNavigationShell: React.FC<{
               opacity: refreshDisabled ? 0.5 : 1,
             }}
           >
-            <RefreshCw size={14} className={isRefreshing ? 'spin-icon' : ''} style={{ flexShrink: 0 }} />
-            <span className="nsac-rail-fade">{refreshCooldown > 0 ? `${refreshCooldown}s` : 'Atualizar'}</span>
+            {showRefreshing ? <MorphingShapeIndicator size={15} label="Atualizando" /> : <RefreshCw size={14} style={{ flexShrink: 0 }} />}
+            <RefreshCooldownLabel cooldownUntil={refreshCooldownUntil} className="nsac-rail-fade" />
           </button>
           <button
             type="button"
@@ -378,11 +426,15 @@ export const ExpressiveNavigationShell: React.FC<{
       <div className="nsac-main-viewport">
         {/* Mobile Top Bar (hidden on Desktop via CSS) */}
         <header
+          ref={topBarRef}
           className="nsac-top-bar"
-          style={{
-            backgroundColor: `${tokens.surface}99`,
-            borderBottom: `1px solid ${tokens.outlineVariant}`,
-          }}
+          style={
+            {
+              '--nsac-bar-bg-glass': `${tokens.surface}99`,
+              '--nsac-bar-bg-opaque': `${tokens.surface}F2`,
+              borderBottom: `1px solid ${tokens.outlineVariant}`,
+            } as React.CSSProperties
+          }
         >
           <div
             style={{
@@ -395,7 +447,7 @@ export const ExpressiveNavigationShell: React.FC<{
               border: `1px solid ${tokens.outlineVariant}`,
             }}
           >
-            <IconShapeContainer size={32} active={isRefreshing}>
+            <IconShapeContainer size={32} active={showRefreshing} morphing={showRefreshing}>
               <GraduationCap size={16} />
             </IconShapeContainer>
             <span
@@ -427,63 +479,45 @@ export const ExpressiveNavigationShell: React.FC<{
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <button
               type="button"
-              disabled={refreshCooldown > 0 || isRefreshing}
-              onClick={onManualRefresh}
-              title="Atualizar notas"
-              style={{
-                height: 36,
-                padding: '0 14px',
-                borderRadius: 999,
-                border: `1px solid ${tokens.outlineVariant}`,
-                backgroundColor: tokens.primaryContainer,
-                color: tokens.onPrimaryContainer,
-                fontWeight: 700,
-                fontSize: '0.76rem',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                cursor: refreshCooldown > 0 || isRefreshing ? 'not-allowed' : 'pointer',
-                opacity: refreshCooldown > 0 || isRefreshing ? 0.5 : 1,
-              }}
-            >
-              <RefreshCw size={14} className={isRefreshing ? 'spin-icon' : ''} />
-              <span>{refreshCooldown > 0 ? `${refreshCooldown}s` : 'Atualizar'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={onLogout}
-              title="Sair da conta"
+              onClick={() => onSelectTab('settings')}
+              title="Configurações"
+              aria-label="Configurações"
+              aria-pressed={activeTab === 'settings'}
               className="mobile-only-btn"
               style={{
                 width: 36,
                 height: 36,
                 borderRadius: 999,
-                border: `1px solid ${tokens.outlineVariant}`,
-                backgroundColor: tokens.surfaceContainerHigh,
-                color: tokens.onSurface,
+                border: `1px solid ${activeTab === 'settings' ? tokens.primary : tokens.outlineVariant}`,
+                backgroundColor: activeTab === 'settings' ? tokens.secondaryContainer : tokens.surfaceContainerHigh,
+                color: activeTab === 'settings' ? tokens.onSecondaryContainer : tokens.onSurface,
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 cursor: 'pointer',
               }}
             >
-              <LogOut size={15} />
+              <Settings size={16} />
             </button>
           </div>
         </header>
 
-        <main className="nsac-page-content">{children}</main>
+        <MobilePullToRefreshContainer refreshing={showRefreshing} onRefresh={onManualRefresh}>
+          <main className="nsac-page-content">{children}</main>
+        </MobilePullToRefreshContainer>
 
         {/* Mobile Floating Pill Bottom Navigation Bar */}
         <nav
           className="nsac-floating-bottom-pill"
-          style={{
-            backgroundColor: `${tokens.surfaceContainerHigh}A8`,
-            border: `1px solid ${tokens.outlineVariant}`,
-          }}
+          style={
+            {
+              '--nsac-pill-bg-glass': `${tokens.surfaceContainerHigh}A8`,
+              '--nsac-pill-bg-opaque': `${tokens.surfaceContainerHigh}F2`,
+              border: `1px solid ${tokens.outlineVariant}`,
+            } as React.CSSProperties
+          }
         >
-          {NAV_TABS.map((item) => (
+          {NAV_TABS.filter((item) => item.inBottomBar).map((item) => (
             <ExpressiveNavItem
               key={item.id}
               item={item}

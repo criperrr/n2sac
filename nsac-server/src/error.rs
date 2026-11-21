@@ -92,6 +92,20 @@ impl ServerError {
         }
     }
 
+    pub fn rate_limited(
+        user_message: impl Into<String>,
+        internal_message: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: ErrorCode::InvalidParams,
+            http_status_override: Some(429),
+            code_str_override: Some("RATE_LIMITED"),
+            user_message: user_message.into(),
+            internal_message: internal_message.into(),
+            source: None,
+        }
+    }
+
     pub fn invalid_params(internal_message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidParams, internal_message)
     }

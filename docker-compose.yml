@@ -41,6 +41,9 @@ services:
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
       FCM_ENABLED: ${FCM_ENABLED:-true}
       FCM_PROJECT_ID: ${FCM_PROJECT_ID:-n2sac-7b9dc}
+      CACHE_AUTH_TTL_SECS: ${CACHE_AUTH_TTL_SECS:-60}
+      CACHE_BOLETIM_TTL_SECS: ${CACHE_BOLETIM_TTL_SECS:-300}
+      CACHE_SNAPSHOT_TTL_SECS: ${CACHE_SNAPSHOT_TTL_SECS:-900}
     volumes:
       - ./secrets/firebase-service-account.json:/secrets/firebase-service-account.json:ro
 

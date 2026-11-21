@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { usePageScrollLock } from '../theme/scrollLock';
 import { createPortal } from 'react-dom';
 import { Trophy, EyeOff, ShieldCheck, Check, X } from 'lucide-react';
 import { useM3Theme } from '../theme/ThemeContext';
@@ -7,6 +8,8 @@ import {
   ExpressiveSwitch,
   IconShapeContainer,
 } from './expressive/ExpressivePrimitives';
+import { useBackLayer } from '../navigation/backStack';
+import { MorphingShapeIndicator } from './expressive/ShapeMorph';
 
 export const RankingConsentModal: React.FC<{
   open: boolean;
@@ -15,6 +18,9 @@ export const RankingConsentModal: React.FC<{
 }> = ({ open, saving, onDecide }) => {
   const { tokens, isMaterialYou } = useM3Theme();
   const [hideName, setHideName] = useState(false);
+  // Mandatory choice: back is consumed so nothing underneath closes.
+  useBackLayer(open, () => {}, { kind: 'blocking' });
+  usePageScrollLock(open);
 
   if (!open || typeof document === 'undefined') return null;
 
@@ -28,9 +34,7 @@ export const RankingConsentModal: React.FC<{
         position: 'fixed',
         inset: 0,
         zIndex: 9999,
-        backgroundColor: 'rgba(0, 0, 0, 0.72)',
-        backdropFilter: 'blur(8px)',
-        WebkitBackdropFilter: 'blur(8px)',
+        backgroundColor: 'rgba(0, 0, 0, 0.76)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -127,7 +131,11 @@ export const RankingConsentModal: React.FC<{
           }}
         >
           <ShieldCheck size={15} color={tokens.gradeSuccess} style={{ flexShrink: 0 }} />
-          <span>Quem escolher &quot;Não participar&quot; nunca aparece no ranking nem em comparações.</span>
+          <span>
+            Participando com nome visível, seu perfil fica acessível para os colegas (e sua foto
+            aparece no ranking — você pode ocultá-la a qualquer momento). Quem escolher &quot;Não
+            participar&quot; nunca aparece no ranking nem em comparações.
+          </span>
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
@@ -144,7 +152,7 @@ export const RankingConsentModal: React.FC<{
             variant="filled"
             size="md"
             disabled={saving}
-            icon={<Check size={15} />}
+            icon={saving ? <MorphingShapeIndicator size={16} label="Salvando" /> : <Check size={15} />}
             onClick={() => onDecide(true, hideName)}
           >
             {saving ? 'Salvando...' : 'Sim, participar'}

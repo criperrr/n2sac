@@ -1,14 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Camera, Check, Settings, User, Image as ImageIcon } from 'lucide-react';
+import { Camera, Check, LogOut, Image as ImageIcon } from 'lucide-react';
 import {
   fetchUserProfile,
+  loadCachedUserProfile,
   updateUserProfile,
   type UserProfileData,
 } from '../api/nsacClient';
 import type { AccountProfileResponse } from '../api/types';
 import { useM3Theme } from '../theme/ThemeContext';
-import { AdaptiveStudioScreen } from './AdaptiveStudioScreen';
 import { EnhancedMorphButton, ExpressiveSegmentedCard } from '../components/expressive/ExpressivePrimitives';
+import { MorphingShapeIndicator } from '../components/expressive/ShapeMorph';
+import { useMinimumBusy } from '../theme/motion';
+import { PrivacySettingsCard } from '../components/PrivacySettingsCard';
+import { SocialHubCard } from '../components/social/SocialHubCard';
 
 export function extractFirstNameFromEmail(email?: string | null): string {
   if (!email) return 'Aluno';
@@ -53,17 +57,20 @@ function compressImageToDataUrl(
 
 export const ProfileScreen: React.FC<{
   token: string;
+  accountId: number;
   accountProfile: AccountProfileResponse | null;
   detectedClassCode: string | null;
-}> = ({ token, accountProfile, detectedClassCode }) => {
+  onLogout: () => void;
+}> = ({ token, accountId, accountProfile, detectedClassCode, onLogout }) => {
   const { tokens, isMaterialYou } = useM3Theme();
-  const [subTab, setSubTab] = useState<'profile' | 'settings'>('profile');
-  const [profile, setProfile] = useState<UserProfileData | null>(null);
-  const [displayName, setDisplayName] = useState('');
-  const [bio, setBio] = useState('');
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
-  const [bannerUrl, setBannerUrl] = useState<string | null>(null);
+  const initialCached = loadCachedUserProfile(accountId);
+  const [profile, setProfile] = useState<UserProfileData | null>(initialCached);
+  const [displayName, setDisplayName] = useState(initialCached?.display_name ?? '');
+  const [bio, setBio] = useState(initialCached?.bio ?? '');
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(initialCached?.avatar_data_url ?? null);
+  const [bannerUrl, setBannerUrl] = useState<string | null>(initialCached?.banner_data_url ?? null);
   const [saving, setSaving] = useState(false);
+  const showSaving = useMinimumBusy(saving);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
   const avatarInputRef = useRef<HTMLInputElement>(null);
@@ -77,11 +84,19 @@ export const ProfileScreen: React.FC<{
       try {
         const data = await fetchUserProfile(token);
         if (cancelled) return;
-        setProfile(data);
-        setDisplayName(data.display_name ?? '');
-        setBio(data.bio ?? '');
-        setAvatarUrl(data.avatar_data_url);
-        setBannerUrl(data.banner_data_url);
+        setProfile((prev) =>
+          prev &&
+          prev.display_name === data.display_name &&
+          prev.bio === data.bio &&
+          prev.avatar_data_url === data.avatar_data_url &&
+          prev.banner_data_url === data.banner_data_url
+            ? prev
+            : data
+        );
+        setDisplayName((prev) => (prev === (data.display_name ?? '') ? prev : (data.display_name ?? '')));
+        setBio((prev) => (prev === (data.bio ?? '') ? prev : (data.bio ?? '')));
+        setAvatarUrl((prev) => (prev === data.avatar_data_url ? prev : data.avatar_data_url));
+        setBannerUrl((prev) => (prev === data.banner_data_url ? prev : data.banner_data_url));
       } catch {
         // fallback gracefully if server is updating
       }
@@ -140,67 +155,7 @@ export const ProfileScreen: React.FC<{
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Top Intuitive Switcher: Perfil | Configurações */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: 8,
-          padding: 6,
-          borderRadius: isMaterialYou ? 999 : 14,
-          backgroundColor: tokens.surfaceContainerLow,
-          border: `1px solid ${tokens.outlineVariant}`,
-        }}
-      >
-        <button
-          type="button"
-          onClick={() => setSubTab('profile')}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 8,
-            padding: '10px 14px',
-            borderRadius: isMaterialYou ? 999 : 10,
-            border: 'none',
-            backgroundColor: subTab === 'profile' ? tokens.primary : 'transparent',
-            color: subTab === 'profile' ? tokens.onPrimary : tokens.onSurfaceVariant,
-            fontWeight: 700,
-            fontSize: '0.86rem',
-            cursor: 'pointer',
-          }}
-        >
-          <User size={16} />
-          <span>Meu Perfil</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setSubTab('settings')}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 8,
-            padding: '10px 14px',
-            borderRadius: isMaterialYou ? 999 : 10,
-            border: 'none',
-            backgroundColor: subTab === 'settings' ? tokens.primary : 'transparent',
-            color: subTab === 'settings' ? tokens.onPrimary : tokens.onSurfaceVariant,
-            fontWeight: 700,
-            fontSize: '0.86rem',
-            cursor: 'pointer',
-          }}
-        >
-          <Settings size={16} />
-          <span>Configurações</span>
-        </button>
-      </div>
-
-      {subTab === 'settings' ? (
-        <AdaptiveStudioScreen detectedClassCode={detectedClassCode} />
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {/* Hidden file inputs */}
           <input
             ref={avatarInputRef}
@@ -400,15 +355,30 @@ export const ProfileScreen: React.FC<{
               )}
 
               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                <EnhancedMorphButton type="submit" variant="filled" size="md" disabled={saving}>
-                  <Check size={15} />
-                  <span>{saving ? 'Salvando...' : 'Salvar Perfil'}</span>
+                <EnhancedMorphButton
+                  type="submit"
+                  variant="filled"
+                  size="md"
+                  disabled={showSaving}
+                  icon={showSaving ? <MorphingShapeIndicator size={16} label="Salvando perfil" /> : <Check size={15} />}
+                >
+                  {showSaving ? 'Salvando...' : 'Salvar Perfil'}
                 </EnhancedMorphButton>
               </div>
             </form>
           </ExpressiveSegmentedCard>
-        </div>
-      )}
+      </div>
+
+      <SocialHubCard token={token} />
+
+      <PrivacySettingsCard token={token} />
+
+      {/* Mobile: logout lives at the end of the profile (desktop keeps it in the rail footer). */}
+      <div className="mobile-only-btn" style={{ display: 'flex', justifyContent: 'center', paddingTop: 4 }}>
+        <EnhancedMorphButton variant="error" size="md" fullWidth icon={<LogOut size={16} />} onClick={onLogout}>
+          Sair da conta
+        </EnhancedMorphButton>
+      </div>
     </div>
   );
 };

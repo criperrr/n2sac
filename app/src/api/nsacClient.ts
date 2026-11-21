@@ -7,10 +7,16 @@ import type {
   BoletimApiQueryParams,
   CachedResource,
   ComparisonSummaryResponse,
-  FichaAvaliacaoDetail,
+  ConversationMessagesPayload,
   FichaAvaliacaoEntry,
+  FollowMutationResult,
   HomeInfo,
   LoginResponse,
+  PublicProfile,
+  RelationshipStatus,
+  SendMessagePayload,
+  SocialOverview,
+  StudentSearchResult,
   RankingPreferences,
   SaidaRecord,
 } from './types';
@@ -382,21 +388,6 @@ export async function fetchFichaList(
   });
 }
 
-export async function fetchFichaDetail(
-  token: string,
-  accountId: number,
-  bimesterId: number,
-  forceRefresh = false
-): Promise<CachedResource<FichaAvaliacaoDetail>> {
-  return fetchWithEtagCache<FichaAvaliacaoDetail>({
-    path: `/api/v1/nsac/ficha-avaliacao/${bimesterId}`,
-    routeKey: `ficha_detail_${bimesterId}`,
-    token,
-    accountId,
-    forceRefresh,
-  });
-}
-
 export async function fetchAccountProfile(token: string): Promise<AccountProfileResponse> {
   const base = getApiBaseUrl();
   const res = await fetch(`${base}/api/v1/account`, {
@@ -452,6 +443,36 @@ export interface UserProfileData {
   banner_data_url: string | null;
 }
 
+const USER_PROFILE_CACHE_PREFIX = 'nsac_user_profile_v1_';
+const userProfileMemCache = new Map<number, UserProfileData>();
+
+export function loadCachedUserProfile(accountId: number | null | undefined): UserProfileData | null {
+  if (!accountId) return null;
+  const mem = userProfileMemCache.get(accountId);
+  if (mem) return mem;
+  try {
+    const raw = window.localStorage.getItem(`${USER_PROFILE_CACHE_PREFIX}${accountId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as UserProfileData;
+    if (parsed && typeof parsed.account_id === 'number') {
+      userProfileMemCache.set(accountId, parsed);
+      return parsed;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return null;
+}
+
+export function saveCachedUserProfile(data: UserProfileData): void {
+  userProfileMemCache.set(data.account_id, data);
+  try {
+    window.localStorage.setItem(`${USER_PROFILE_CACHE_PREFIX}${data.account_id}`, JSON.stringify(data));
+  } catch {
+    // ignore quota errors
+  }
+}
+
 export async function fetchUserProfile(token: string): Promise<UserProfileData> {
   const base = getApiBaseUrl();
   const res = await fetch(`${base}/api/v1/account/profile`, {
@@ -466,6 +487,7 @@ export async function fetchUserProfile(token: string): Promise<UserProfileData> 
       res.status
     );
   }
+  saveCachedUserProfile(body.data);
   return body.data;
 }
 
@@ -495,6 +517,7 @@ export async function updateUserProfile(
       res.status
     );
   }
+  saveCachedUserProfile(body.data);
   return body.data;
 }
 
@@ -539,7 +562,13 @@ export async function fetchRankingPreferences(token: string): Promise<RankingPre
 
 export async function updateRankingPreferences(
   token: string,
-  payload: { opted_in: boolean; hide_name: boolean; display_name?: string | null }
+  payload: {
+    opted_in: boolean;
+    hide_name: boolean;
+    display_name?: string | null;
+    show_avatar?: boolean;
+    public_profile?: boolean;
+  }
 ): Promise<RankingPreferences> {
   const base = getApiBaseUrl();
   const res = await fetch(`${base}/api/v1/account/ranking-preferences`, {
@@ -563,7 +592,8 @@ export async function fetchCompareLeaderboard(
     bimester?: number | null;
     subject?: string;
     peerId?: number | null;
-  } = {}
+  } = {},
+  signal?: AbortSignal
 ): Promise<ComparisonSummaryResponse> {
   const base = getApiBaseUrl();
   const sp = new URLSearchParams();
@@ -576,8 +606,214 @@ export async function fetchCompareLeaderboard(
   const res = await fetch(`${base}/api/v1/compare${qs ? `?${qs}` : ''}`, {
     method: 'GET',
     headers: { Authorization: `Bearer ${token}` },
+    signal,
   });
   if (!res.ok) throw await parseErrorResponse(res);
   const env = (await res.json()) as ApiSuccessEnvelope<ComparisonSummaryResponse>;
   return env.data;
+}
+
+/** A classmate's public profile (404 → not available: private, anonymous or not in the ranking). */
+export async function fetchPublicProfile(token: string, accountId: number): Promise<PublicProfile> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/profiles/${accountId}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<PublicProfile>;
+  return env.data;
+}
+
+/**
+ * Profile images need the bearer token, so `<img src>` can't load them directly: they are fetched
+ * once, kept as object URLs for the session (the URL is versioned, so it never goes stale) and
+ * shared by every avatar showing the same person.
+ */
+const imageCache = new Map<string, Promise<string | null>>();
+
+export function loadProfileImage(token: string, path: string): Promise<string | null> {
+  const cached = imageCache.get(path);
+  if (cached) return cached;
+  const base = getApiBaseUrl();
+  const pending = fetch(`${base}${path}`, { headers: { Authorization: `Bearer ${token}` } })
+    .then(async (res) => (res.ok ? URL.createObjectURL(await res.blob()) : null))
+    .catch(() => null)
+    .then((url) => {
+      if (!url) imageCache.delete(path); // retry on the next mount
+      return url;
+    });
+  imageCache.set(path, pending);
+  return pending;
+}
+
+/** Students findable by name (word prefixes, accent-insensitive) or by their exact e-mail. */
+export async function searchStudents(
+  token: string,
+  query: string,
+  signal?: AbortSignal
+): Promise<StudentSearchResult[]> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/students/search?q=${encodeURIComponent(query)}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+    signal,
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<StudentSearchResult[]>;
+  return env.data;
+}
+
+/** Account-wide exposure: "be found in search" and invisible mode. */
+export async function updatePrivacy(
+  token: string,
+  payload: { discoverable?: boolean; invisible?: boolean }
+): Promise<RankingPreferences> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/account/privacy`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<RankingPreferences>;
+  return env.data;
+}
+
+/**
+ * Asks the server for a short-lived link to the ficha PDF exactly as the NSAC serves it
+ * (fetched with the student's session; the link needs no token, so a browser can open it).
+ * 404 → the NSAC hasn't released that bimester yet.
+ */
+export async function requestFichaPdfLink(token: string, bimesterId: number): Promise<string> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/nsac/ficha-avaliacao/${bimesterId}/pdf-link`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<{ url: string; expires_in_secs: number }>;
+  return new URL(`${base}${env.data.url}`, window.location.origin).toString();
+}
+
+export async function fetchSocialOverview(token: string): Promise<SocialOverview> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/social/overview`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<SocialOverview>;
+  return env.data;
+}
+
+export async function followStudent(token: string, accountId: number): Promise<FollowMutationResult> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/social/follows/${accountId}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<FollowMutationResult>;
+  return env.data;
+}
+
+export async function unfollowStudent(token: string, accountId: number): Promise<RelationshipStatus> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/social/follows/${accountId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<RelationshipStatus>;
+  return env.data;
+}
+
+export async function acceptFollowRequest(token: string, requesterId: number): Promise<FollowMutationResult> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/social/requests/${requesterId}/accept`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<FollowMutationResult>;
+  return env.data;
+}
+
+export async function declineFollowRequest(token: string, requesterId: number): Promise<RelationshipStatus> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/social/requests/${requesterId}/decline`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<RelationshipStatus>;
+  return env.data;
+}
+
+export async function blockStudent(token: string, accountId: number): Promise<RelationshipStatus> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/social/blocks/${accountId}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<RelationshipStatus>;
+  return env.data;
+}
+
+export async function unblockStudent(token: string, accountId: number): Promise<RelationshipStatus> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/social/blocks/${accountId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<RelationshipStatus>;
+  return env.data;
+}
+
+export async function fetchConversationMessages(
+  token: string,
+  peerId: number,
+  options?: { afterId?: number; limit?: number; signal?: AbortSignal }
+): Promise<ConversationMessagesPayload> {
+  const base = getApiBaseUrl();
+  const params = new URLSearchParams();
+  if (options?.afterId) params.set('after_id', String(options.afterId));
+  if (options?.limit) params.set('limit', String(options.limit));
+  const qs = params.toString();
+  const res = await fetch(`${base}/api/v1/social/conversations/${peerId}/messages${qs ? `?${qs}` : ''}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+    signal: options?.signal,
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<ConversationMessagesPayload>;
+  return env.data;
+}
+
+export async function sendConversationMessage(
+  token: string,
+  peerId: number,
+  text: string
+): Promise<SendMessagePayload> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/social/conversations/${peerId}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<SendMessagePayload>;
+  return env.data;
+}
+
+export async function deleteConversation(token: string, peerId: number): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/social/conversations/${peerId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
 }

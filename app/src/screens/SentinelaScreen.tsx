@@ -24,6 +24,9 @@ import {
   ExpressiveSegmentedCard,
   IconShapeContainer,
 } from '../components/expressive/ExpressivePrimitives';
+import { MorphingShapeIndicator } from '../components/expressive/ShapeMorph';
+import { useMinimumBusy } from '../theme/motion';
+import { PollCountdownLabel } from '../components/PollCountdown';
 
 export const SentinelaScreen: React.FC<{
   token: string;
@@ -33,9 +36,9 @@ export const SentinelaScreen: React.FC<{
   lastStatus: 200 | 304 | null;
   cachedAt: number | null;
   nextPollHintSecs: number;
-  nextPollCountdown: number;
+  nextPollAt: number | null;
   isPageVisible: boolean;
-  refreshCooldown: number;
+  refreshCooldownUntil: number | null;
   isRefreshing: boolean;
   onManualRefresh: (forceBackendRefresh: boolean) => void;
 }> = ({
@@ -44,13 +47,15 @@ export const SentinelaScreen: React.FC<{
   onProfileUpdated,
   cachedAt,
   nextPollHintSecs,
-  nextPollCountdown,
+  nextPollAt,
+  isPageVisible,
   isRefreshing,
 }) => {
   const { tokens, isMaterialYou } = useM3Theme();
   const [fcmInput, setFcmInput] = useState('');
   const [discordInput, setDiscordInput] = useState(accountProfile?.discord_id ?? '');
   const [savingFcm, setSavingFcm] = useState(false);
+  const showSavingFcm = useMinimumBusy(savingFcm);
   const [savingDiscord, setSavingDiscord] = useState(false);
   const [statusBanner, setStatusBanner] = useState<{
     type: 'success' | 'error';
@@ -279,7 +284,11 @@ export const SentinelaScreen: React.FC<{
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.76rem', fontWeight: 700 }}>
               <span>PRÓXIMA VERIFICAÇÃO</span>
               <span style={{ color: tokens.gradeSuccess }}>
-                <AnimatedNumber value={nextPollCountdown} decimals={0} suffix="s" />
+                <PollCountdownLabel
+                  nextPollAt={nextPollAt}
+                  paused={!isPageVisible}
+                  fallbackSecs={nextPollHintSecs}
+                />
               </span>
             </div>
             <div style={{ fontSize: '0.78rem', color: tokens.onSurfaceVariant, marginTop: 10 }}>
@@ -369,11 +378,11 @@ export const SentinelaScreen: React.FC<{
             <EnhancedMorphButton
               size="md"
               variant="filled"
-              disabled={savingFcm}
-              icon={<Sparkles size={15} />}
+              disabled={showSavingFcm}
+              icon={showSavingFcm ? <MorphingShapeIndicator size={16} label="Salvando" /> : <Sparkles size={15} />}
               onClick={() => handleRegisterFcm()}
             >
-              {savingFcm
+              {showSavingFcm
                 ? 'Salvando...'
                 : accountProfile?.has_fcm_token
                   ? 'Atualizar Notificações'
