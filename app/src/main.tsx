@@ -7,6 +7,7 @@ import { ThemeProvider } from './theme/ThemeContext';
 import { TelemetryErrorBoundary } from './components/TelemetryErrorBoundary';
 import { TelemetryConsentModal } from './components/TelemetryConsentModal';
 import { UpdateAvailableDialog } from './components/UpdateAvailableDialog';
+import { AndroidWebApkPrompt } from './components/AndroidWebApkBanner';
 import {
   getTelemetryConsent,
   setTelemetryConsent,
@@ -20,10 +21,31 @@ import {
   type NativeUpdateInfo,
 } from './updater/autoUpdater';
 import './index.css';
+import { installMotionTokens } from './theme/motion';
+import { installContentSizeMorph } from './theme/contentSizeMorph';
+import { finishBootSplash } from './updater/bootSplash';
+
+installMotionTokens();
+installContentSizeMorph();
+
+// If a hot deployment replaces lazy screen chunks while a user has the app open,
+// reload once cleanly into the new bundle instead of throwing a dynamic import crash.
+if (typeof window !== 'undefined') {
+  window.addEventListener('vite:preloadError', (event) => {
+    const key = 'n2sac_chunk_reload_ts';
+    const last = Number(sessionStorage.getItem(key) || '0');
+    if (Date.now() - last > 10_000) {
+      event.preventDefault();
+      sessionStorage.setItem(key, String(Date.now()));
+      window.location.reload();
+    }
+  });
+}
 
 const TelemetryBootstrap: React.FC = () => {
   const [consent, setConsent] = useState<TelemetryConsentState>(() => getTelemetryConsent());
   const [nativeUpdate, setNativeUpdate] = useState<NativeUpdateInfo | null>(null);
+  const dismissedUpdateKeyRef = useRef<string | null>(null);
   const updateCheckInFlight = useRef(false);
   const lastUpdateCheckAt = useRef(0);
 
@@ -33,7 +55,13 @@ const TelemetryBootstrap: React.FC = () => {
     updateCheckInFlight.current = true;
     lastUpdateCheckAt.current = now;
     try {
-      setNativeUpdate(await checkAllUpdates());
+      const next = await checkAllUpdates();
+      const key = next ? `${next.source}:${next.version}:${next.buildId ?? ''}` : null;
+      if (key && key === dismissedUpdateKeyRef.current) {
+        setNativeUpdate(null);
+      } else {
+        setNativeUpdate(next);
+      }
       await syncBackgroundUpdateState();
     } finally {
       updateCheckInFlight.current = false;
@@ -109,10 +137,26 @@ const TelemetryBootstrap: React.FC = () => {
         />
       )}
       {nativeUpdate && (
-        <UpdateAvailableDialog update={nativeUpdate} onDismiss={() => setNativeUpdate(null)} />
+        <UpdateAvailableDialog
+          update={nativeUpdate}
+          onDismiss={() => {
+            dismissedUpdateKeyRef.current = `${nativeUpdate.source}:${nativeUpdate.version}:${nativeUpdate.buildId ?? ''}`;
+            setNativeUpdate(null);
+          }}
+        />
       )}
+      <AndroidWebApkPrompt />
     </>
   );
+};
+
+/** Runs after the app's first commit: hands over from the boot splash (after an OTA reload). */
+const BootSplashHandoff: React.FC = () => {
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => finishBootSplash());
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  return null;
 };
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -121,6 +165,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <ThemeProvider>
         <App />
         <TelemetryBootstrap />
+        <BootSplashHandoff />
       </ThemeProvider>
     </TelemetryErrorBoundary>
   </React.StrictMode>

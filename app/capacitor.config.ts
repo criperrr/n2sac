@@ -1,15 +1,27 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
+const devServerUrl = process.env.N2SAC_DEV_SERVER_URL?.trim();
+
 const config: CapacitorConfig = {
   appId: 'com.cti.n2sac',
   appName: 'n²sac',
   webDir: 'dist',
-  server: {
-    url: 'https://notebook-server.tailddd6bf.ts.net',
-    androidScheme: 'https',
-    cleartext: false,
-  },
+  // N2SAC_DEV_SERVER_URL (e.g. http://localhost:4173 + `adb reverse`) builds a test APK that loads
+  // an unpublished local build. Release builds must be synced without it.
+  server: devServerUrl
+    ? { url: devServerUrl, androidScheme: 'https', cleartext: true }
+    : {
+        url: 'https://notebook-server.tailddd6bf.ts.net',
+        androidScheme: 'https',
+        cleartext: false,
+      },
   plugins: {
+    // Back is owned by MainActivity's predictive back callback + the web back stack.
+    // Capacitor's always-enabled handler would swallow every back gesture and block
+    // the system back-to-home animation.
+    App: {
+      disableBackButtonHandler: true,
+    },
     BackgroundRunner: {
       label: 'com.cti.n2sac.update-check',
       src: 'runners/update-check.js',

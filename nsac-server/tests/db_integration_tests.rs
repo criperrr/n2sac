@@ -168,6 +168,15 @@ async fn migrations_create_all_12_tables_and_indexes_idempotently() {
         "auxiliary_snapshots",
         "sentinel_class_state",
         "grade_posting_events",
+        "account_ranking_preferences",
+        "account_profiles",
+        "telemetry_events",
+        "discord_channel_subscriptions",
+        "discord_dm_preferences",
+        "social_follows",
+        "social_blocks",
+        "social_messages",
+        "social_conversation_state",
     ];
 
     for table in expected_tables {
@@ -184,6 +193,11 @@ async fn migrations_create_all_12_tables_and_indexes_idempotently() {
     for idx in [
         "idx_grade_posting_events_class_doy",
         "idx_grade_posting_events_class_year_bim",
+        "idx_ranking_prefs_opted_in",
+        "idx_telemetry_events_type_created",
+        "idx_school_years_year",
+        "idx_grades_account_bimester_posted",
+        "idx_accounts_upper_class_code_active",
     ] {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = $1)",
@@ -558,4 +572,71 @@ async fn supports_all_21_cti_classes_snapshots_sentinel_and_hint_stub() {
 
     let due = sentinel.list_due_classes(now + Duration::seconds(130)).await.unwrap();
     assert!(due.iter().any(|s| s.class_code == custom_class));
+}
+
+#[tokio::test]
+async fn leaderboard_cte_avoids_toast_groupby_and_preserves_avatar_version() {
+    let pool = common::test_pool().await;
+    let crypto = test_crypto();
+    let suffix = common::unique_suffix();
+    let accounts = AccountRepo::new(pool.clone());
+    let boletim_repo = BoletimRepo::new(pool.clone());
+    let ranking_repo = nsac_server::db::RankingRepo::new(pool.clone());
+    let now = Utc::now();
+
+    let class_code = format!("TST{}", &suffix[suffix.len().saturating_sub(3)..]);
+    let cookies = NsacSessionCookies::new("x", "s", None).unwrap();
+    let acct = accounts
+        .upsert_on_login(
+            &crypto,
+            &format!("rank_{suffix}@unesp.br"),
+            "pass",
+            &cookies,
+            Some(&class_code),
+            None,
+            None,
+            now,
+        )
+        .await
+        .unwrap();
+    boletim_repo
+        .upsert_boletim(acct.id, &sample_boletim(&class_code))
+        .await
+        .unwrap();
+
+    ranking_repo
+        .upsert_preferences(acct.id, true, false, Some("Aluno Teste"), Some(true), Some(true))
+        .await
+        .unwrap();
+
+    // Store a large TOASTed base64 avatar (>30 KB) and verify leaderboard returns avatar_url accurately.
+    let big_avatar = format!("data:image/jpeg;base64,{}", "A".repeat(40_000));
+    sqlx::query(
+        r#"
+        INSERT INTO account_profiles (account_id, display_name, avatar_data_url, updated_at)
+        VALUES ($1, 'Aluno Teste', $2, NOW())
+        ON CONFLICT (account_id) DO UPDATE SET avatar_data_url = EXCLUDED.avatar_data_url, updated_at = NOW()
+        "#,
+    )
+    .bind(acct.id)
+    .bind(&big_avatar)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let summary = ranking_repo
+        .fetch_leaderboard(acct.id, Some(&class_code), "class", 2026, None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(summary.total_participants, 1);
+    let entry = summary.my_entry.expect("requester must appear in leaderboard");
+    assert_eq!(entry.display_label, "Aluno Teste");
+    assert!(
+        entry
+            .avatar_url
+            .as_deref()
+            .is_some_and(|u| u.starts_with(&format!("/api/v1/profiles/{}/avatar?v=", acct.id))),
+        "expected versioned avatar_url, got {:?}",
+        entry.avatar_url
+    );
 }

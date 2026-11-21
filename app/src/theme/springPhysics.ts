@@ -52,6 +52,16 @@ export function useSpringValue(
     const damping = spec.dampingRatio * 2 * Math.sqrt(stiffness * mass);
     const precision = spec.precision ?? 0.005;
 
+    // Already settled at target (e.g. initial mount): skip scheduling a pointless rAF + setState.
+    if (
+      Math.abs(stateRef.current.velocity) < precision &&
+      Math.abs(stateRef.current.target - stateRef.current.position) < precision
+    ) {
+      stateRef.current.position = target;
+      stateRef.current.velocity = 0;
+      return;
+    }
+
     let active = true;
     stateRef.current.lastTime = performance.now();
 

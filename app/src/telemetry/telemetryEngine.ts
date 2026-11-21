@@ -4,7 +4,34 @@ import { APP_VERSION } from '../appVersion';
 const CONSENT_STORAGE_KEY = 'n2sac_telemetry_consent_v1';
 const FINGERPRINT_KEY = 'n2sac_device_fp_v1';
 
+/** Bounded frame-time ring buffer (O(1) insert, zero array shifts). */
+const FRAME_BUFFER_CAPACITY = 300;
+/** Active rAF sampling burst duration (ms) per window. */
+const SAMPLE_BURST_MS = 4_000;
+/** Rest duration (ms) between bursts while page is visible. */
+const SAMPLE_REST_MS = 26_000;
+const INITIAL_FLUSH_DELAY_MS = 15_000;
+const PERIODIC_FLUSH_MS = 60_000;
+
 export type TelemetryConsentState = 'undecided' | 'granted' | 'denied';
+
+interface StaticHardwareProfile {
+  cpu_cores: number | null;
+  device_memory_gb: number | null;
+  gpu_renderer: string;
+  gpu_vendor: string;
+  screen_width: number | null;
+  screen_height: number | null;
+  dpr: number;
+  user_agent: string;
+}
+
+type NavigatorWithHints = Navigator & {
+  deviceMemory?: number;
+  connection?: { effectiveType?: string; rtt?: number; downlink?: number };
+};
+
+let cachedStaticHardware: StaticHardwareProfile | null = null;
 
 export function getTelemetryConsent(): TelemetryConsentState {
   try {
@@ -52,30 +79,38 @@ function detectPlatform(): string {
   return 'web';
 }
 
-export function collectHardwareProfile(): Record<string, unknown> {
-  if (typeof window === 'undefined') return {};
+/**
+ * Probes static device capabilities (including WebGL GPU renderer/vendor) ONCE per session
+ * and immediately releases the temporary WebGL context to prevent GPU context leaks.
+ */
+function getStaticHardwareProfile(): StaticHardwareProfile {
+  if (cachedStaticHardware) return cachedStaticHardware;
+
   let gpuRenderer = 'unknown';
   let gpuVendor = 'unknown';
   try {
     const canvas = document.createElement('canvas');
-    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-    if (gl && 'getExtension' in gl) {
-      const dbg = (gl as WebGLRenderingContext).getExtension('WEBGL_debug_renderer_info');
+    canvas.width = 1;
+    canvas.height = 1;
+    const gl = (canvas.getContext('webgl') ||
+      canvas.getContext('experimental-webgl')) as WebGLRenderingContext | null;
+    if (gl && typeof gl.getExtension === 'function') {
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
       if (dbg) {
-        gpuRenderer = String((gl as WebGLRenderingContext).getParameter(dbg.UNMASKED_RENDERER_WEBGL) ?? 'unknown');
-        gpuVendor = String((gl as WebGLRenderingContext).getParameter(dbg.UNMASKED_VENDOR_WEBGL) ?? 'unknown');
+        gpuRenderer = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) ?? 'unknown');
+        gpuVendor = String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) ?? 'unknown');
       }
+      const loseCtx = gl.getExtension('WEBGL_lose_context');
+      loseCtx?.loseContext();
     }
+    canvas.width = 0;
+    canvas.height = 0;
   } catch {
-    // ignore
+    // ignore WebGL unavailability
   }
 
-  const nav = navigator as Navigator & {
-    deviceMemory?: number;
-    connection?: { effectiveType?: string; rtt?: number; downlink?: number };
-  };
-
-  return {
+  const nav = navigator as NavigatorWithHints;
+  cachedStaticHardware = {
     cpu_cores: nav.hardwareConcurrency ?? null,
     device_memory_gb: nav.deviceMemory ?? null,
     gpu_renderer: gpuRenderer,
@@ -83,32 +118,60 @@ export function collectHardwareProfile(): Record<string, unknown> {
     screen_width: window.screen?.width ?? null,
     screen_height: window.screen?.height ?? null,
     dpr: window.devicePixelRatio ?? 1,
+    user_agent: nav.userAgent.slice(0, 220),
+  };
+  return cachedStaticHardware;
+}
+
+export function collectHardwareProfile(): Record<string, unknown> {
+  if (typeof window === 'undefined') return {};
+  const staticHw = getStaticHardwareProfile();
+  const nav = navigator as NavigatorWithHints;
+
+  return {
+    ...staticHw,
     viewport_width: window.innerWidth,
     viewport_height: window.innerHeight,
     network_type: nav.connection?.effectiveType ?? null,
     network_rtt_ms: nav.connection?.rtt ?? null,
     network_downlink_mbps: nav.connection?.downlink ?? null,
-    user_agent: nav.userAgent.slice(0, 220),
   };
 }
 
+let engineActive = false;
 let rafId: number | null = null;
+let burstStopTimer: number | null = null;
+let burstNextTimer: number | null = null;
+let initialFlushTimer: number | null = null;
 let flushTimer: number | null = null;
+let hasSentInitialFlush = false;
+
 let lastFrameTs = 0;
-let frameDurations: number[] = [];
+const frameDurations = new Float32Array(FRAME_BUFFER_CAPACITY);
+let frameWriteIdx = 0;
+let frameSampleCount = 0;
 let jankFrames = 0;
 let severeJankFrames = 0;
 let longTaskCount = 0;
 let maxLongTaskMs = 0;
 let longTaskObserver: PerformanceObserver | null = null;
 let globalErrorHandlersAttached = false;
+let visibilityHandlerAttached = false;
 
-function sampleFrame(ts: number) {
+function sampleFrame(ts: number): void {
+  if (!engineActive || document.hidden) {
+    rafId = null;
+    lastFrameTs = 0;
+    return;
+  }
   if (lastFrameTs > 0) {
     const dt = ts - lastFrameTs;
     if (dt > 0 && dt < 1000) {
-      frameDurations.push(dt);
-      if (frameDurations.length > 600) frameDurations.shift();
+      frameDurations[frameWriteIdx] = dt;
+      frameWriteIdx = (frameWriteIdx + 1) % FRAME_BUFFER_CAPACITY;
+      if (frameSampleCount < FRAME_BUFFER_CAPACITY) {
+        frameSampleCount++;
+      }
       if (dt > 18) jankFrames++;
       if (dt > 34) severeJankFrames++;
     }
@@ -117,10 +180,98 @@ function sampleFrame(ts: number) {
   rafId = window.requestAnimationFrame(sampleFrame);
 }
 
+function stopFrameBurst(): void {
+  if (rafId !== null) {
+    window.cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+  if (burstStopTimer !== null) {
+    window.clearTimeout(burstStopTimer);
+    burstStopTimer = null;
+  }
+  if (burstNextTimer !== null) {
+    window.clearTimeout(burstNextTimer);
+    burstNextTimer = null;
+  }
+  lastFrameTs = 0;
+}
+
+function startFrameBurst(): void {
+  if (!engineActive || typeof document === 'undefined' || document.hidden) return;
+  stopFrameBurst();
+  lastFrameTs = 0;
+  rafId = window.requestAnimationFrame(sampleFrame);
+
+  burstStopTimer = window.setTimeout(() => {
+    burstStopTimer = null;
+    if (rafId !== null) {
+      window.cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    lastFrameTs = 0;
+    if (engineActive && !document.hidden) {
+      burstNextTimer = window.setTimeout(() => {
+        burstNextTimer = null;
+        startFrameBurst();
+      }, SAMPLE_REST_MS);
+    }
+  }, SAMPLE_BURST_MS);
+}
+
+function clearFlushTimers(): void {
+  if (initialFlushTimer !== null) {
+    window.clearTimeout(initialFlushTimer);
+    initialFlushTimer = null;
+  }
+  if (flushTimer !== null) {
+    window.clearInterval(flushTimer);
+    flushTimer = null;
+  }
+}
+
+function scheduleFlushTimers(): void {
+  if (!engineActive || typeof document === 'undefined' || document.hidden) return;
+  clearFlushTimers();
+
+  if (!hasSentInitialFlush) {
+    initialFlushTimer = window.setTimeout(() => {
+      initialFlushTimer = null;
+      hasSentInitialFlush = true;
+      void sendTelemetryPayload('performance');
+    }, INITIAL_FLUSH_DELAY_MS);
+  }
+
+  flushTimer = window.setInterval(() => {
+    if (!document.hidden) {
+      void sendTelemetryPayload('performance');
+    }
+  }, PERIODIC_FLUSH_MS);
+}
+
+function handleVisibilityChange(): void {
+  if (!engineActive) return;
+  if (document.hidden) {
+    stopFrameBurst();
+    clearFlushTimers();
+  } else if (getTelemetryConsent() === 'granted') {
+    startFrameBurst();
+    scheduleFlushTimers();
+  }
+}
+
 function collectRuntimeMetrics(): Record<string, unknown> {
-  const count = frameDurations.length;
-  const avgDt = count > 0 ? frameDurations.reduce((a, b) => a + b, 0) / count : 16.67;
-  const maxDt = count > 0 ? Math.max(...frameDurations) : 16.67;
+  const count = frameSampleCount;
+  let sumDt = 0;
+  let maxDt = 16.67;
+  if (count > 0) {
+    maxDt = 0;
+    for (let i = 0; i < count; i++) {
+      const dt = frameDurations[i]!;
+      sumDt += dt;
+      if (dt > maxDt) maxDt = dt;
+    }
+  }
+  const avgDt = count > 0 ? sumDt / count : 16.67;
   const fpsAvg = Math.min(120, Math.round((1000 / avgDt) * 10) / 10);
   const fpsMin = Math.max(1, Math.round((1000 / maxDt) * 10) / 10);
 
@@ -142,8 +293,9 @@ function collectRuntimeMetrics(): Record<string, unknown> {
     route: typeof window !== 'undefined' ? window.location.pathname : '/',
   };
 
-  // Reset window counters after snapshot
-  frameDurations = [];
+  // Reset window counters after snapshot (ring buffer pointers reset in O(1))
+  frameWriteIdx = 0;
+  frameSampleCount = 0;
   jankFrames = 0;
   severeJankFrames = 0;
   longTaskCount = 0;
@@ -195,10 +347,7 @@ export function startTelemetryEngine(): void {
   if (typeof window === 'undefined') return;
   if (getTelemetryConsent() !== 'granted') return;
 
-  if (rafId === null) {
-    lastFrameTs = 0;
-    rafId = window.requestAnimationFrame(sampleFrame);
-  }
+  engineActive = true;
 
   if (!longTaskObserver && typeof PerformanceObserver !== 'undefined') {
     try {
@@ -224,21 +373,28 @@ export function startTelemetryEngine(): void {
     });
   }
 
-  if (flushTimer === null) {
-    // Initial sample after 15s, then every 60s
-    window.setTimeout(() => void sendTelemetryPayload('performance'), 15_000);
-    flushTimer = window.setInterval(() => void sendTelemetryPayload('performance'), 60_000);
+  if (!visibilityHandlerAttached && typeof document !== 'undefined') {
+    visibilityHandlerAttached = true;
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+  }
+
+  if (typeof document === 'undefined' || !document.hidden) {
+    if (rafId === null && burstStopTimer === null && burstNextTimer === null) {
+      startFrameBurst();
+    }
+    if (flushTimer === null && initialFlushTimer === null) {
+      scheduleFlushTimers();
+    }
   }
 }
 
 export function stopTelemetryEngine(): void {
-  if (rafId !== null) {
-    window.cancelAnimationFrame(rafId);
-    rafId = null;
-  }
-  if (flushTimer !== null) {
-    window.clearInterval(flushTimer);
-    flushTimer = null;
+  engineActive = false;
+  stopFrameBurst();
+  clearFlushTimers();
+  if (visibilityHandlerAttached && typeof document !== 'undefined') {
+    visibilityHandlerAttached = false;
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
   }
   if (longTaskObserver) {
     longTaskObserver.disconnect();

@@ -12,3 +12,13 @@ app/android/.gradle/
 app/android/capacitor-cordova-android-plugins/build/
 *.log
 .DS_Store
+
+# AI agent configurations and local memory (never push to remote)
+.agents/
+.claude/
+.cursor/
+.windsurf/
+.gemini/
+CLAUDE.md
+AGENTS.md
+GEMINI.md

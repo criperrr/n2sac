@@ -11,8 +11,9 @@ use sqlx::PgPool;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::config::{CacheConfig, Config};
-use crate::db::{AccountRepo, AuthRepo, BoletimRepo, RankingRepo, SentinelRepo, SnapshotRepo};
+use crate::db::{AccountRepo, AuthRepo, BoletimRepo, RankingRepo, SentinelRepo, SnapshotRepo, SocialRepo};
 use crate::error::ServerError;
+use crate::fcm::FcmClient;
 use crate::ports::{Clock, HeuristicObserver, SystemClock};
 use crate::sentinel::SentinelHeuristic;
 
@@ -268,6 +269,7 @@ pub struct AppState {
     pub db: PgPool,
     pub crypto: CryptoService,
     pub nsac: NsacClient,
+    pub fcm: FcmClient,
     pub clock: Arc<dyn Clock>,
     pub heuristic: Arc<dyn HeuristicObserver>,
     pub caches: AppCaches,
@@ -286,6 +288,7 @@ impl AppState {
             &config.nsac_base_url,
             Duration::from_secs(config.nsac_timeout_secs),
         )?;
+        let fcm = FcmClient::new(config.fcm.clone())?;
         let caches = AppCaches::new(config.cache);
         let semaphore = NsacSemaphore::new(config.nsac_max_concurrent_requests);
 
@@ -294,6 +297,7 @@ impl AppState {
             db,
             crypto,
             nsac,
+            fcm,
             clock,
             heuristic,
             caches,
@@ -331,5 +335,9 @@ impl AppState {
 
     pub fn ranking(&self) -> RankingRepo {
         RankingRepo::new(self.db.clone())
+    }
+
+    pub fn social(&self) -> SocialRepo {
+        SocialRepo::new(self.db.clone())
     }
 }

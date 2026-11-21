@@ -241,3 +241,61 @@ async fn send_grade_notification_disabled_mode_returns_disabled_without_http_cal
     let received = server.received_requests().await.expect("received requests");
     assert!(received.is_empty(), "expected zero HTTP requests when disabled");
 }
+
+#[tokio::test]
+async fn send_social_notifications_route_to_high_priority_android_channels() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/oauth2/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "social-oauth2-token",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/projects/nsac-test-proj/messages:send"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "projects/nsac-test-proj/messages/social-ok"
+        })))
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let client = FcmClient::new(build_fcm_config(&server, true)).expect("create FcmClient");
+
+    let cases = [
+        ("chat_message", "n2sac-social-messages", "chat-42", "Ana Beatriz", "Oi, tudo bem?"),
+        ("follow", "n2sac-social-follows", "follow-42", "Novo seguidor no n²sac", "Ana Beatriz começou a seguir você!"),
+        ("friendship", "n2sac-social-friends", "friend-42", "Amizade conquistada!", "Ana Beatriz agora é seu amigo!"),
+    ];
+
+    for (kind, _ch, _tag, title, body) in cases {
+        let outcome = client
+            .send_social_notification("device-tok", title, body, kind, 42, "Ana Beatriz")
+            .await
+            .expect("send social push");
+        assert!(matches!(outcome, FcmDeliveryOutcome::Delivered { .. }));
+    }
+
+    let received = server.received_requests().await.expect("received requests");
+    let pushes: Vec<serde_json::Value> = received
+        .iter()
+        .filter(|r| r.url.path() == "/v1/projects/nsac-test-proj/messages:send")
+        .map(|r| serde_json::from_slice(&r.body).expect("json"))
+        .collect();
+    assert_eq!(pushes.len(), 3);
+
+    for (push, (kind, expected_ch, expected_tag, _, _)) in pushes.iter().zip(cases.iter()) {
+        assert_eq!(push["message"]["data"]["kind"], *kind);
+        assert_eq!(push["message"]["data"]["actor_id"], "42");
+        assert_eq!(push["message"]["data"]["actor_label"], "Ana Beatriz");
+        assert_eq!(push["message"]["android"]["priority"], "high");
+        assert_eq!(push["message"]["android"]["notification"]["channel_id"], *expected_ch);
+        assert_eq!(push["message"]["android"]["notification"]["tag"], *expected_tag);
+        assert_eq!(push["message"]["android"]["notification"]["sound"], "default");
+    }
+}

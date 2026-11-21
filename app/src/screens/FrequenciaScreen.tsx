@@ -7,16 +7,15 @@ import {
   ExternalLink,
   CheckCircle2,
   Lock,
-  ChevronDown,
-  ChevronUp,
+  Printer,
   Info,
   Calendar,
   UserCheck,
 } from 'lucide-react';
-import { fetchFichaDetail } from '../api/nsacClient';
+import { NsacApiClientError, requestFichaPdfLink } from '../api/nsacClient';
+import { openExternalUrl, preopenTabForWeb } from '../platform/openExternal';
 import type {
   AtrasoRecord,
-  FichaAvaliacaoDetail,
   FichaAvaliacaoEntry,
   HomeInfo,
   SaidaRecord,
@@ -28,6 +27,7 @@ import {
   ExpressiveSegmentedCard,
   IconShapeContainer,
 } from '../components/expressive/ExpressivePrimitives';
+import { MorphingShapeIndicator } from '../components/expressive/ShapeMorph';
 
 type AuxSection = 'fichas' | 'atrasos' | 'saidas' | 'portal';
 
@@ -38,35 +38,40 @@ export const FrequenciaScreen: React.FC<{
   atrasos: AtrasoRecord[];
   saidas: SaidaRecord[];
   homeInfo: HomeInfo | null;
-}> = ({ token, accountId, fichas, atrasos, saidas, homeInfo }) => {
+}> = ({ token, fichas, atrasos, saidas, homeInfo }) => {
   const { tokens, isMaterialYou } = useM3Theme();
   const [section, setSection] = useState<AuxSection>('fichas');
-  const [expandedFichaId, setExpandedFichaId] = useState<number | null>(null);
-  const [fichaDetailsMap, setFichaDetailsMap] = useState<Record<number, FichaAvaliacaoDetail>>({});
-  const [loadingFichaId, setLoadingFichaId] = useState<number | null>(null);
-  const [fichaError, setFichaError] = useState<string | null>(null);
+  const [openingFichaId, setOpeningFichaId] = useState<number | null>(null);
+  const [fichaMessage, setFichaMessage] = useState<{ id: number; text: string; error: boolean } | null>(null);
 
-  const handleToggleFichaDetail = async (bimester: number, detailId: number | null) => {
-    const idToFetch = detailId ?? bimester;
-    if (expandedFichaId === idToFetch) {
-      setExpandedFichaId(null);
-      return;
-    }
-    setExpandedFichaId(idToFetch);
-    setFichaError(null);
-
-    if (fichaDetailsMap[idToFetch]) return;
-
-    setLoadingFichaId(idToFetch);
+  /** Opens the ficha PDF (as the NSAC serves it) in the browser, ready to print or save. */
+  const openFichaPdf = async (id: number) => {
+    const tab = preopenTabForWeb();
+    setOpeningFichaId(id);
+    setFichaMessage(null);
     try {
-      const res = await fetchFichaDetail(token, accountId, idToFetch);
-      setFichaDetailsMap((prev) => ({ ...prev, [idToFetch]: res.data }));
+      const url = await requestFichaPdfLink(token, id);
+      if (openExternalUrl(url, tab) === 'needs-apk-update') {
+        setFichaMessage({
+          id,
+          text: 'Atualize o app (APK) para abrir o PDF no navegador.',
+          error: true,
+        });
+      }
     } catch (err) {
-      setFichaError(
-        err instanceof Error ? err.message : 'Não foi possível carregar os detalhes da ficha.'
-      );
+      tab?.close();
+      setFichaMessage({
+        id,
+        text:
+          err instanceof NsacApiClientError && err.status === 404
+            ? 'Esta ficha ainda não foi liberada pelo NSAC.'
+            : err instanceof Error
+              ? err.message
+              : 'Não foi possível abrir a ficha agora.',
+        error: !(err instanceof NsacApiClientError && err.status === 404),
+      });
     } finally {
-      setLoadingFichaId(null);
+      setOpeningFichaId(null);
     }
   };
 
@@ -140,22 +145,19 @@ export const FrequenciaScreen: React.FC<{
         />
       </section>
 
-      {/* SECTION 1: FICHAS DE AVALIAÇÃO */}
+      {/* SECTION 1: FICHAS DE AVALIAÇÃO — the original PDF opens in the browser to print */}
       {section === 'fichas' && (
         <section style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {displayFichas.map((entry, idx) => {
             const targetId = entry.detailId ?? entry.bimester;
-            const isExpanded = expandedFichaId === targetId;
-            const detail = fichaDetailsMap[targetId];
-            const isLoading = loadingFichaId === targetId;
+            const opening = openingFichaId === targetId;
+            const message = fichaMessage?.id === targetId ? fichaMessage : null;
 
             return (
               <ExpressiveSegmentedCard
                 key={`${entry.bimester}-${idx}`}
                 index={idx}
                 total={displayFichas.length}
-                selected={isExpanded}
-                onClick={() => handleToggleFichaDetail(entry.bimester, entry.detailId)}
                 style={{ padding: '18px 20px' }}
               >
                 <div
@@ -163,10 +165,11 @@ export const FrequenciaScreen: React.FC<{
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
+                    flexWrap: 'wrap',
                     gap: 12,
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 14, minWidth: 0 }}>
                     <IconShapeContainer
                       size={44}
                       containerColor={
@@ -175,154 +178,71 @@ export const FrequenciaScreen: React.FC<{
                       contentColor={
                         entry.available ? tokens.onPrimaryContainer : tokens.onSurfaceVariant
                       }
-                      active={isExpanded}
+                      morphing={opening}
                     >
                       {entry.available ? <CheckCircle2 size={19} /> : <Lock size={19} />}
                     </IconShapeContainer>
 
-                    <div>
+                    <div style={{ minWidth: 0 }}>
                       <div style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: '1.05rem' }}>
                         Ficha de Avaliação • {entry.bimester}º Bimestre
                         {entry.schoolYear ? ` (${entry.schoolYear})` : ''}
                       </div>
                       <div style={{ fontSize: '0.82rem', color: tokens.onSurfaceVariant, marginTop: 2 }}>
-                        {entry.statusText || 'Ficha conceitual do conselho de classe'}
-                        {entry.lastViewed ? ` • Visualizado em ${entry.lastViewed}` : ''}
+                        {entry.available
+                          ? entry.lastViewed
+                            ? `Visualizada em ${entry.lastViewed}`
+                            : 'Disponível para imprimir'
+                          : entry.statusText || 'Não disponível ainda'}
                       </div>
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {entry.available ? (
+                    <EnhancedMorphButton
+                      size="sm"
+                      variant="filled"
+                      disabled={opening}
+                      icon={
+                        opening ? (
+                          <MorphingShapeIndicator size={16} label="Abrindo ficha" />
+                        ) : (
+                          <Printer size={15} />
+                        )
+                      }
+                      onClick={() => void openFichaPdf(targetId)}
+                    >
+                      {opening ? 'Abrindo...' : 'Abrir PDF'}
+                    </EnhancedMorphButton>
+                  ) : (
                     <span
                       style={{
                         padding: '4px 10px',
                         borderRadius: 999,
                         fontSize: '0.73rem',
                         fontWeight: 700,
-                        backgroundColor: entry.available
-                          ? tokens.gradeSuccessContainer
-                          : tokens.surfaceContainerHighest,
-                        color: entry.available
-                          ? tokens.onGradeSuccessContainer
-                          : tokens.onSurfaceVariant,
+                        backgroundColor: tokens.surfaceContainerHighest,
+                        color: tokens.onSurfaceVariant,
                       }}
                     >
-                      {entry.available ? 'Disponível' : 'Bloqueada'}
+                      Bloqueada
                     </span>
-                    {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                  </div>
+                  )}
                 </div>
 
-                {/* Expanded Conceptual Ficha Details (T8RIN ExpandableItem pattern) */}
-                {isExpanded && (
+                {message && (
                   <div
-                    onClick={(e) => e.stopPropagation()}
+                    role="status"
                     style={{
-                      marginTop: 16,
-                      paddingTop: 16,
-                      borderTop: `1px solid ${tokens.outlineVariant}`,
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 12,
+                      marginTop: 12,
+                      padding: '10px 12px',
+                      borderRadius: 14,
+                      fontSize: '0.82rem',
+                      backgroundColor: message.error ? tokens.errorContainer : tokens.surfaceContainer,
+                      color: message.error ? tokens.onErrorContainer : tokens.onSurfaceVariant,
                     }}
                   >
-                    {isLoading && (
-                      <div style={{ fontSize: '0.86rem', color: tokens.primary, fontWeight: 600 }}>
-                        Carregando ficha de avaliação...
-                      </div>
-                    )}
-
-                    {fichaError && (
-                      <div
-                        style={{
-                          padding: '12px 14px',
-                          borderRadius: 16,
-                          backgroundColor: tokens.errorContainer,
-                          color: tokens.onErrorContainer,
-                          fontSize: '0.83rem',
-                        }}
-                      >
-                        {fichaError}
-                      </div>
-                    )}
-
-                    {detail && (
-                      <>
-                        {detail.title && (
-                          <div style={{ fontWeight: 700, fontSize: '0.94rem', color: tokens.primary }}>
-                            {detail.title}
-                          </div>
-                        )}
-
-                        {detail.tables.length > 0 ? (
-                          detail.tables.map((table, tIdx) => (
-                            <div
-                              key={tIdx}
-                              style={{
-                                overflowX: 'auto',
-                                borderRadius: 16,
-                                border: `1px solid ${tokens.outlineVariant}`,
-                                backgroundColor: tokens.surfaceContainerLowest,
-                              }}
-                            >
-                              <table
-                                style={{
-                                  width: '100%',
-                                  borderCollapse: 'collapse',
-                                  fontSize: '0.82rem',
-                                }}
-                              >
-                                <tbody>
-                                  {table.map((row, rIdx) => (
-                                    <tr
-                                      key={rIdx}
-                                      style={{
-                                        backgroundColor:
-                                          rIdx === 0 ? tokens.surfaceContainer : 'transparent',
-                                        fontWeight: rIdx === 0 ? 700 : 400,
-                                        borderBottom:
-                                          rIdx < table.length - 1
-                                            ? `1px solid ${tokens.outlineVariant}`
-                                            : 'none',
-                                      }}
-                                    >
-                                      {row.map((cell, cIdx) => (
-                                        <td key={cIdx} style={{ padding: '10px 12px' }}>
-                                          {cell}
-                                        </td>
-                                      ))}
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          ))
-                        ) : (
-                          <div style={{ fontSize: '0.84rem', color: tokens.onSurfaceVariant }}>
-                            Nenhuma tabela conceitual publicada para este bimestre ainda.
-                          </div>
-                        )}
-
-                        {detail.notes.length > 0 && (
-                          <div
-                            style={{
-                              padding: '12px 14px',
-                              borderRadius: 16,
-                              backgroundColor: tokens.secondaryContainer,
-                              color: tokens.onSecondaryContainer,
-                              fontSize: '0.82rem',
-                            }}
-                          >
-                            <div style={{ fontWeight: 700, marginBottom: 4 }}>
-                              Observações do Conselho:
-                            </div>
-                            {detail.notes.map((n, nIdx) => (
-                              <div key={nIdx}>• {n}</div>
-                            ))}
-                          </div>
-                        )}
-                      </>
-                    )}
+                    {message.text}
                   </div>
                 )}
               </ExpressiveSegmentedCard>

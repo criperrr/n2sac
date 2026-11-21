@@ -79,19 +79,39 @@ impl BoletimRepo {
 
         for year_info in years_sorted {
             let year_i32 = i32::from(year_info.year);
-            let school_year_id: i64 = sqlx::query_scalar(
-                r#"
-                INSERT INTO school_years (year, title)
-                VALUES ($1, $2)
-                ON CONFLICT (title, year) DO UPDATE SET
-                    year = EXCLUDED.year
-                RETURNING id
-                "#,
+            // Lookup first so unchanged school_years never trigger no-op UPDATE dead tuples.
+            let school_year_id: i64 = match sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM school_years WHERE title = $1 AND year = $2",
             )
-            .bind(year_i32)
             .bind(&year_info.title)
-            .fetch_one(&mut *tx)
-            .await?;
+            .bind(year_i32)
+            .fetch_optional(&mut *tx)
+            .await?
+            {
+                Some(id) => id,
+                None => match sqlx::query_scalar::<_, i64>(
+                    r#"
+                    INSERT INTO school_years (year, title)
+                    VALUES ($1, $2)
+                    ON CONFLICT (title, year) DO NOTHING
+                    RETURNING id
+                    "#,
+                )
+                .bind(year_i32)
+                .bind(&year_info.title)
+                .fetch_optional(&mut *tx)
+                .await?
+                {
+                    Some(id) => id,
+                    None => sqlx::query_scalar(
+                        "SELECT id FROM school_years WHERE title = $1 AND year = $2",
+                    )
+                    .bind(&year_info.title)
+                    .bind(year_i32)
+                    .fetch_one(&mut *tx)
+                    .await?,
+                },
+            };
 
             sqlx::query(
                 r#"
@@ -99,6 +119,7 @@ impl BoletimRepo {
                 VALUES ($1, $2, $3)
                 ON CONFLICT (account_id, school_year_id) DO UPDATE SET
                     status = EXCLUDED.status
+                WHERE accounts_school_years.status IS DISTINCT FROM EXCLUDED.status
                 "#,
             )
             .bind(account_id)
@@ -130,6 +151,9 @@ impl BoletimRepo {
                         user_average = EXCLUDED.user_average,
                         class_average = EXCLUDED.class_average,
                         total_absences = EXCLUDED.total_absences
+                    WHERE bimesters.user_average IS DISTINCT FROM EXCLUDED.user_average
+                       OR bimesters.class_average IS DISTINCT FROM EXCLUDED.class_average
+                       OR bimesters.total_absences IS DISTINCT FROM EXCLUDED.total_absences
                     "#,
                 )
                 .bind(account_id)
@@ -145,20 +169,46 @@ impl BoletimRepo {
             let mut subjects_sorted: Vec<&FullGrades> = year_info.grades.iter().collect();
             subjects_sorted.sort_by(|a, b| a.subject_name.cmp(&b.subject_name));
 
+            // Pre-load existing subjects for this school year in 1 query to avoid per-subject
+            // no-op UPDATE dead tuples and cut round-trips.
+            let existing_subjects: Vec<(String, i64)> = sqlx::query_as(
+                "SELECT name, id FROM subjects WHERE school_year_id = $1",
+            )
+            .bind(school_year_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            let mut subject_id_by_name: HashMap<String, i64> =
+                existing_subjects.into_iter().collect();
+
             for subject in subjects_sorted {
-                let subject_id: i64 = sqlx::query_scalar(
-                    r#"
-                    INSERT INTO subjects (school_year_id, abbreviation, name)
-                    VALUES ($1, '', $2)
-                    ON CONFLICT (name, school_year_id) DO UPDATE SET
-                        name = EXCLUDED.name
-                    RETURNING id
-                    "#,
-                )
-                .bind(school_year_id)
-                .bind(&subject.subject_name)
-                .fetch_one(&mut *tx)
-                .await?;
+                let subject_id: i64 = if let Some(&id) = subject_id_by_name.get(&subject.subject_name) {
+                    id
+                } else {
+                    let id = match sqlx::query_scalar::<_, i64>(
+                        r#"
+                        INSERT INTO subjects (school_year_id, abbreviation, name)
+                        VALUES ($1, '', $2)
+                        ON CONFLICT (name, school_year_id) DO NOTHING
+                        RETURNING id
+                        "#,
+                    )
+                    .bind(school_year_id)
+                    .bind(&subject.subject_name)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    {
+                        Some(id) => id,
+                        None => sqlx::query_scalar(
+                            "SELECT id FROM subjects WHERE name = $1 AND school_year_id = $2",
+                        )
+                        .bind(&subject.subject_name)
+                        .bind(school_year_id)
+                        .fetch_one(&mut *tx)
+                        .await?,
+                    };
+                    subject_id_by_name.insert(subject.subject_name.clone(), id);
+                    id
+                };
 
                 let final_absences_i32 =
                     i32::try_from(subject.results.total_absences).map_err(|_| {
@@ -177,6 +227,8 @@ impl BoletimRepo {
                     ON CONFLICT (account_id, subject_id) DO UPDATE SET
                         final_grade = EXCLUDED.final_grade,
                         total_absences = EXCLUDED.total_absences
+                    WHERE subject_final_results.final_grade IS DISTINCT FROM EXCLUDED.final_grade
+                       OR subject_final_results.total_absences IS DISTINCT FROM EXCLUDED.total_absences
                     "#,
                 )
                 .bind(account_id)
@@ -232,6 +284,13 @@ impl BoletimRepo {
                             recovery_message = EXCLUDED.recovery_message,
                             approved = EXCLUDED.approved,
                             recovered = EXCLUDED.recovered
+                        WHERE grades.grade IS DISTINCT FROM EXCLUDED.grade
+                           OR grades.average_grade IS DISTINCT FROM EXCLUDED.average_grade
+                           OR grades.absences IS DISTINCT FROM EXCLUDED.absences
+                           OR grades.recovery_code IS DISTINCT FROM EXCLUDED.recovery_code
+                           OR grades.recovery_message IS DISTINCT FROM EXCLUDED.recovery_message
+                           OR grades.approved IS DISTINCT FROM EXCLUDED.approved
+                           OR grades.recovered IS DISTINCT FROM EXCLUDED.recovered
                         "#,
                     )
                     .bind(account_id)

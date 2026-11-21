@@ -33,6 +33,7 @@ dotenvy.workspace = true
 url.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
+base64 = "0.22"
 
 [dev-dependencies]
 wiremock.workspace = true

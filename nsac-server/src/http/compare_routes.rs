@@ -15,6 +15,11 @@ pub struct UpdateRankingPreferencesRequest {
     pub hide_name: bool,
     #[serde(default)]
     pub display_name: Option<String>,
+    /// Omitted by older clients: the stored value is kept.
+    #[serde(default)]
+    pub show_avatar: Option<bool>,
+    #[serde(default)]
+    pub public_profile: Option<bool>,
 }
 
 pub async fn get_ranking_preferences(
@@ -61,6 +66,8 @@ pub async fn put_ranking_preferences(
             body.opted_in,
             body.hide_name,
             body.display_name.as_deref(),
+            body.show_avatar,
+            body.public_profile,
         )
         .await?;
 

@@ -237,6 +237,7 @@ code {
   z-index: 40;
   min-height: 60px;
   padding: calc(env(safe-area-inset-top, 0px) + 6px) 14px 6px;
+  background-color: var(--nsac-bar-bg-glass, var(--m3-surface));
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
   transform: translateZ(0);
@@ -254,7 +255,7 @@ code {
   overflow-x: hidden;
 }
 
-/* Floating Bottom Navigation Bar on Mobile (GPU-composited frosted glass blur) */
+/* Floating Bottom Navigation Bar on Mobile */
 .nsac-floating-bottom-pill {
   position: fixed;
   left: 50%;
@@ -264,15 +265,34 @@ code {
   max-width: 480px;
   height: 66px;
   border-radius: 9999px;
+  background-color: var(--nsac-pill-bg-glass, var(--m3-surface-container-high));
   backdrop-filter: blur(22px) saturate(180%);
   -webkit-backdrop-filter: blur(22px) saturate(180%);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   align-items: center;
-  justify-content: space-between;
-  padding: 0 6px;
+  padding: 0 8px;
   overflow: hidden;
   z-index: 50;
+}
+
+/*
+ * Mobile/touch GPU optimization: avoid full-backdrop 20-22px Gaussian blur + saturate(180%)
+ * over scrolling lists on Mali/Adreno GPUs; use a crisp 95%-opaque translucent surface instead.
+ */
+@media (hover: none), (max-width: 900px) {
+  .nsac-top-bar {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: var(--nsac-bar-bg-opaque, var(--m3-surface));
+  }
+
+  .nsac-floating-bottom-pill {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: var(--nsac-pill-bg-opaque, var(--m3-surface-container-high));
+  }
 }
 
 @media (min-width: 920px) {
@@ -298,22 +318,76 @@ code {
 }
 
 /*
- * IMPORTANT: At 100%, transform MUST be `none` so `.m3-page-transition` never creates
- * a containing block that traps `position: fixed` descendants.
+ * Page entry = M3 fade through (fallback when the View Transitions API is unavailable):
+ * stays invisible until 35% of progress, then fades in while scaling 92% -> 100%.
+ * Uses the individual `scale` property ending at `none`, so the page never keeps a transform
+ * that would trap `position: fixed` descendants.
  */
-@keyframes m3PageFancySlide {
+@keyframes m3FadeThroughIn {
   0% {
     opacity: 0;
-    transform: translateY(10px) scale(0.99);
+    scale: 0.92;
+  }
+  35% {
+    opacity: 0;
   }
   100% {
+    opacity: 1;
+    scale: none;
+  }
+}
+
+.m3-page-transition {
+  animation: m3FadeThroughIn 300ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+/*
+ * A page that arrived through a View Transition was already animated by the snapshots: it gets no
+ * entry animation of its own and its cards skip the stagger, so the change animates exactly once.
+ * (A rule toggled by html[data-vt] would re-trigger the animation the moment the attribute drops.)
+ */
+.nsac-page-vt .m3-segmented-card,
+.nsac-page-vt .m3-table-row-stagger,
+.m3-page-swipe-next .m3-segmented-card,
+.m3-page-swipe-next .m3-table-row-stagger,
+.m3-page-swipe-prev .m3-segmented-card,
+.m3-page-swipe-prev .m3-table-row-stagger {
+  animation: none;
+}
+
+@keyframes m3SwipeEnterFromRight {
+  from {
+    opacity: 0.35;
+    transform: translate3d(24%, 0, 0);
+  }
+  to {
     opacity: 1;
     transform: none;
   }
 }
 
-.m3-page-transition {
-  animation: m3PageFancySlide 320ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+@keyframes m3SwipeEnterFromLeft {
+  from {
+    opacity: 0.35;
+    transform: translate3d(-24%, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.m3-page-swipe-next {
+  animation: m3SwipeEnterFromRight 220ms cubic-bezier(0.05, 0.7, 0.1, 1) both;
+}
+
+.m3-page-swipe-prev {
+  animation: m3SwipeEnterFromLeft 220ms cubic-bezier(0.05, 0.7, 0.1, 1) both;
+}
+
+/* Never block touch/pointer events while a View Transition is animating. */
+::view-transition {
+  pointer-events: none;
 }
 
 /* Staggered List Entry Choreography for Segmented Cards & Table Rows */
@@ -337,45 +411,23 @@ code {
   animation: m3CardStaggerEnter 280ms cubic-bezier(0.2, 0, 0, 1) both;
 }
 
-/* Centered Modal Portal Backdrop & Dialog Spring Animations */
-@keyframes m3BackdropFadeIn {
-  0% {
+/*
+ * Dialogs without an origin element = M3 "fade" (enter/exit) pattern:
+ * enter fades in over 150ms (linear) while scaling 80% -> 100% on the fast spatial spring;
+ * exit fades out over 75ms. Opacity and `scale` are separate animations so each keeps its own
+ * timing, and `scale` never conflicts with the inline transform used by predictive back.
+ * Dialogs opened from an element use the container transform instead (ExpressiveModal, WAAPI).
+ */
+@keyframes m3FadeIn {
+  from {
     opacity: 0;
   }
-  100% {
+  to {
     opacity: 1;
   }
 }
 
-@keyframes m3ModalDialogSpring {
-  0% {
-    opacity: 0;
-    transform: translateY(18px) scale(0.95);
-  }
-  100% {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.m3-modal-backdrop {
-  animation: m3BackdropFadeIn 200ms cubic-bezier(0.2, 0, 0, 1) forwards;
-}
-
-.m3-modal-backdrop-exit {
-  animation: m3BackdropFadeOut 220ms cubic-bezier(0.4, 0, 1, 1) forwards;
-  pointer-events: none;
-}
-
-.m3-modal-dialog-enter {
-  animation: m3ModalDialogSpring 320ms cubic-bezier(0.22, 1.15, 0.36, 1) forwards;
-}
-
-.m3-modal-dialog-exit {
-  animation: m3ModalDialogExit 220ms cubic-bezier(0.4, 0, 1, 1) forwards;
-}
-
-@keyframes m3BackdropFadeOut {
+@keyframes m3FadeOut {
   from {
     opacity: 1;
   }
@@ -384,14 +436,289 @@ code {
   }
 }
 
-@keyframes m3ModalDialogExit {
+@keyframes m3FadeScaleIn {
+  from {
+    scale: 0.8;
+  }
+  to {
+    scale: none;
+  }
+}
+
+.m3-modal-backdrop {
+  animation: m3FadeIn 150ms linear both;
+}
+
+.m3-modal-backdrop-exit {
+  animation: m3FadeOut 200ms linear both;
+  pointer-events: none;
+}
+
+.m3-modal-dialog-enter {
+  animation:
+    m3FadeIn 150ms linear both,
+    m3FadeScaleIn var(--m3-spring-fast-spatial-duration, 350ms) var(--m3-spring-fast-spatial, cubic-bezier(0.05, 0.7, 0.1, 1)) both;
+}
+
+.m3-modal-dialog-exit {
+  animation: m3FadeOut 75ms linear both;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------------------------
+ * Screen transitions (View Transitions API, see theme/viewTransition.ts).
+ * Values from MDC Android: fade-through threshold 35%, incoming scale 92%; shared axis slide
+ * 30dp; shared axis Z incoming 80% / outgoing 110%.
+ * ------------------------------------------------------------------------------------- */
+
+@keyframes vtFadeThroughOut {
   0% {
     opacity: 1;
-    transform: none;
   }
+  35%,
   100% {
     opacity: 0;
-    transform: translateY(18px) scale(0.95);
+  }
+}
+
+@keyframes vtFadeThroughIn {
+  0%,
+  35% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes vtScaleFrom92 {
+  from {
+    scale: 0.92;
+  }
+}
+
+@keyframes vtSlideToStart {
+  to {
+    translate: -30px 0;
+  }
+}
+
+@keyframes vtSlideFromEnd {
+  from {
+    translate: 30px 0;
+  }
+}
+
+@keyframes vtSlideToEnd {
+  to {
+    translate: 30px 0;
+  }
+}
+
+@keyframes vtSlideFromStart {
+  from {
+    translate: -30px 0;
+  }
+}
+
+@keyframes vtScaleTo110 {
+  to {
+    scale: 1.1;
+  }
+}
+
+@keyframes vtScaleFrom80 {
+  from {
+    scale: 0.8;
+  }
+}
+
+@keyframes vtScaleTo80 {
+  to {
+    scale: 0.8;
+  }
+}
+
+@keyframes vtScaleFrom110 {
+  from {
+    scale: 1.1;
+  }
+}
+
+/* Tabs and in-app hierarchy: only the page content animates; top/bottom bars stay pinned on top. */
+html[data-vt='fade-through'] .nsac-page-content,
+html[data-vt^='swipe-'] .nsac-page-content,
+html[data-vt^='axis-x'] .nsac-page-content {
+  view-transition-name: nsac-page;
+}
+
+html[data-vt='fade-through'] .nsac-top-bar,
+html[data-vt^='axis-x'] .nsac-top-bar {
+  view-transition-name: nsac-top-bar;
+}
+
+html[data-vt='fade-through'] .nsac-floating-bottom-pill,
+html[data-vt^='axis-x'] .nsac-floating-bottom-pill {
+  view-transition-name: nsac-bottom-bar;
+}
+
+html[data-vt='fade-through']::view-transition-old(root),
+html[data-vt='fade-through']::view-transition-new(root),
+html[data-vt^='swipe-']::view-transition-old(root),
+html[data-vt^='swipe-']::view-transition-new(root),
+html[data-vt^='axis-x']::view-transition-old(root),
+html[data-vt^='axis-x']::view-transition-new(root),
+html[data-vt]::view-transition-group(nsac-page),
+html[data-vt]::view-transition-group(nsac-top-bar),
+html[data-vt]::view-transition-new(nsac-top-bar),
+html[data-vt]::view-transition-group(nsac-bottom-bar),
+html[data-vt]::view-transition-new(nsac-bottom-bar) {
+  animation: none;
+}
+
+html[data-vt]::view-transition-old(nsac-top-bar),
+html[data-vt]::view-transition-old(nsac-bottom-bar) {
+  display: none;
+}
+
+html[data-vt]::view-transition-group(nsac-page) {
+  z-index: 10;
+}
+
+html[data-vt]::view-transition-group(nsac-top-bar) {
+  z-index: 40;
+}
+
+html[data-vt]::view-transition-group(nsac-bottom-bar) {
+  z-index: 50;
+}
+
+@keyframes vtSwipeOutLeft {
+  from {
+    translate: 0 0;
+    opacity: 1;
+  }
+  to {
+    translate: -28% 0;
+    opacity: 0;
+  }
+}
+
+@keyframes vtSwipeInFromRight {
+  from {
+    translate: 28% 0;
+    opacity: 0;
+  }
+  to {
+    translate: 0 0;
+    opacity: 1;
+  }
+}
+
+@keyframes vtSwipeOutRight {
+  from {
+    translate: 0 0;
+    opacity: 1;
+  }
+  to {
+    translate: 28% 0;
+    opacity: 0;
+  }
+}
+
+@keyframes vtSwipeInFromLeft {
+  from {
+    translate: -28% 0;
+    opacity: 0;
+  }
+  to {
+    translate: 0 0;
+    opacity: 1;
+  }
+}
+
+html[data-vt='swipe-next']::view-transition-old(nsac-page) {
+  animation: vtSwipeOutLeft 260ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+html[data-vt='swipe-next']::view-transition-new(nsac-page) {
+  animation: vtSwipeInFromRight var(--m3-spring-fast-spatial-duration, 340ms)
+    var(--m3-spring-fast-spatial, cubic-bezier(0.05, 0.7, 0.1, 1)) both;
+}
+
+html[data-vt='swipe-prev']::view-transition-old(nsac-page) {
+  animation: vtSwipeOutRight 260ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+html[data-vt='swipe-prev']::view-transition-new(nsac-page) {
+  animation: vtSwipeInFromLeft var(--m3-spring-fast-spatial-duration, 340ms)
+    var(--m3-spring-fast-spatial, cubic-bezier(0.05, 0.7, 0.1, 1)) both;
+}
+
+html[data-vt='fade-through']::view-transition-old(nsac-page) {
+  animation: vtFadeThroughOut 300ms linear both;
+}
+
+html[data-vt='fade-through']::view-transition-new(nsac-page) {
+  animation:
+    vtFadeThroughIn 300ms linear both,
+    vtScaleFrom92 300ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+html[data-vt='axis-x-forward']::view-transition-old(nsac-page) {
+  animation:
+    vtFadeThroughOut 450ms linear both,
+    vtSlideToStart 450ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+html[data-vt='axis-x-forward']::view-transition-new(nsac-page) {
+  animation:
+    vtFadeThroughIn 450ms linear both,
+    vtSlideFromEnd 450ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+html[data-vt='axis-x-backward']::view-transition-old(nsac-page) {
+  animation:
+    vtFadeThroughOut 450ms linear both,
+    vtSlideToEnd 450ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+html[data-vt='axis-x-backward']::view-transition-new(nsac-page) {
+  animation:
+    vtFadeThroughIn 450ms linear both,
+    vtSlideFromStart 450ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+/* Login <-> app: shared axis Z on the whole screen. */
+html[data-vt='axis-z-forward']::view-transition-old(root) {
+  animation:
+    vtFadeThroughOut 450ms linear both,
+    vtScaleTo110 450ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+html[data-vt='axis-z-forward']::view-transition-new(root) {
+  animation:
+    vtFadeThroughIn 450ms linear both,
+    vtScaleFrom80 450ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+html[data-vt='axis-z-backward']::view-transition-old(root) {
+  animation:
+    vtFadeThroughOut 450ms linear both,
+    vtScaleTo80 450ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+html[data-vt='axis-z-backward']::view-transition-new(root) {
+  animation:
+    vtFadeThroughIn 450ms linear both,
+    vtScaleFrom110 450ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .m3-page-transition,
+  .m3-modal-dialog-enter,
+  .m3-modal-backdrop {
+    animation-duration: 1ms;
   }
 }
 
@@ -652,5 +979,287 @@ html[data-design-system='material-you'] .nsac-official-table-wrapper {
 @media (prefers-reduced-motion: reduce) {
   .m3-skeleton {
     animation: none;
+  }
+}
+
+/* Content-area offset used by overlay pages so the desktop rail stays visible beside them. */
+:root {
+  --nsac-rail-offset: 0px;
+}
+
+@media (min-width: 920px) {
+  :root {
+    --nsac-rail-offset: 256px;
+  }
+
+  :root.nsac-rail-collapsed {
+    --nsac-rail-offset: 84px;
+  }
+}
+
+/* Full-screen page pushed above the current screen (predictive back reveals the screen below). */
+.nsac-overlay-page {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  left: var(--nsac-rail-offset);
+  z-index: 35;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  transition: left 320ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.nsac-overlay-page-content {
+  width: 100%;
+  max-width: 1380px;
+  margin: 0 auto;
+  padding: calc(var(--nsac-top-bar-height, max(60px, env(safe-area-inset-top, 0px) + 57px)) + 16px) 12px
+    calc(env(safe-area-inset-bottom, 0px) + 104px);
+}
+
+@media (min-width: 920px) {
+  .nsac-overlay-page-content {
+    padding: 22px 24px 48px;
+  }
+}
+
+
+/* Ranking: slowly turning M3 shape behind the 1st place photo. */
+.n2sac-crown-halo {
+  animation: n2sacCrownHalo 14s linear infinite;
+}
+@keyframes n2sacCrownHalo {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* Hidden under an open dialog: no reason to keep repainting it. */
+html.n2sac-scroll-locked .n2sac-crown-halo {
+  animation-play-state: paused;
+}
+@media (prefers-reduced-motion: reduce) {
+  .n2sac-crown-halo {
+    animation: none;
+  }
+}
+
+/* Dialogs: a scroll that reaches the end of a dialog never chains to the page behind it. */
+[role='dialog'],
+[role='dialog'] * {
+  overscroll-behavior: contain;
+}
+
+/* ShimmerVeil: Circle to Search–style loading haze (transform/opacity only → compositor). */
+.n2sac-veil {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  isolation: isolate;
+  background: rgba(255, 236, 240, 0.32);
+  z-index: 1;
+}
+.n2sac-veil__haze {
+  position: absolute;
+  inset: -60%;
+  background:
+    radial-gradient(38% 42% at 28% 34%, rgba(234, 67, 53, 0.55), transparent 70%),
+    radial-gradient(34% 40% at 70% 30%, rgba(251, 188, 4, 0.45), transparent 72%),
+    radial-gradient(40% 44% at 62% 72%, rgba(244, 114, 182, 0.5), transparent 70%),
+    radial-gradient(30% 36% at 30% 76%, rgba(66, 133, 244, 0.38), transparent 72%),
+    radial-gradient(26% 30% at 84% 62%, rgba(52, 168, 83, 0.3), transparent 72%);
+  animation: n2sacVeilDrift 5.2s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+  will-change: transform;
+}
+.n2sac-veil__sweep {
+  position: absolute;
+  inset: -20% -60%;
+  background: linear-gradient(100deg, transparent 38%, rgba(255, 255, 255, 0.42) 50%, transparent 62%);
+  animation: n2sacVeilSweep 1.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  will-change: transform;
+}
+.n2sac-veil__grain {
+  position: absolute;
+  inset: -64px;
+  background-size: 128px 128px;
+  opacity: 0.9;
+  mix-blend-mode: overlay;
+  animation: n2sacVeilGrain 0.5s steps(4) infinite;
+  will-change: transform;
+}
+.n2sac-veil--compact {
+  background: rgba(255, 236, 240, 0.14);
+}
+.n2sac-veil--compact .n2sac-veil__haze {
+  opacity: 0.55;
+}
+/* Full-dialog surface variant: smaller GPU overhang (~50% less VRAM) and no overlay blend readback. */
+.n2sac-veil--surface {
+  contain: strict;
+  background: rgba(255, 236, 240, 0.24);
+}
+.n2sac-veil--surface .n2sac-veil__haze {
+  inset: -26%;
+  animation-name: n2sacVeilSurfaceDrift;
+}
+.n2sac-veil--surface .n2sac-veil__sweep {
+  inset: 0 -38%;
+  animation-name: n2sacVeilSurfaceSweep;
+}
+.n2sac-veil--surface .n2sac-veil__grain {
+  inset: -32px;
+  opacity: 0.55;
+  mix-blend-mode: normal;
+}
+.n2sac-veil--static * {
+  animation: none !important;
+}
+@keyframes n2sacVeilDrift {
+  0% {
+    transform: translate3d(-7%, -5%, 0) rotate(-6deg) scale(1);
+  }
+  100% {
+    transform: translate3d(7%, 6%, 0) rotate(14deg) scale(1.08);
+  }
+}
+@keyframes n2sacVeilSurfaceDrift {
+  0% {
+    transform: translate3d(-5%, -4%, 0) rotate(-4deg) scale(1);
+  }
+  100% {
+    transform: translate3d(5%, 4%, 0) rotate(10deg) scale(1.06);
+  }
+}
+@keyframes n2sacVeilSweep {
+  0% {
+    transform: translate3d(-45%, 0, 0);
+  }
+  100% {
+    transform: translate3d(45%, 0, 0);
+  }
+}
+@keyframes n2sacVeilSurfaceSweep {
+  0% {
+    transform: translate3d(-32%, 0, 0);
+  }
+  100% {
+    transform: translate3d(32%, 0, 0);
+  }
+}
+@keyframes n2sacVeilGrain {
+  0% { transform: translate3d(0, 0, 0); }
+  25% { transform: translate3d(-23px, 17px, 0); }
+  50% { transform: translate3d(31px, -9px, 0); }
+  75% { transform: translate3d(-11px, -29px, 0); }
+  100% { transform: translate3d(0, 0, 0); }
+}
+
+.n2sac-snackbar {
+  transform: translateX(-50%);
+  animation: n2sacSnackIn 360ms cubic-bezier(0.05, 0.7, 0.1, 1) both, n2sacSnackOut 240ms 2.3s cubic-bezier(0.3, 0, 0.8, 0.15) forwards;
+}
+@keyframes n2sacSnackIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 18px) scale(0.96);
+  }
+}
+@keyframes n2sacSnackOut {
+  to {
+    opacity: 0;
+    transform: translate(-50%, 10px);
+  }
+}
+
+/* Google / M3 Expressive friendship celebration animations (compositor-only transform + opacity). */
+@keyframes n2sacFriendRipple {
+  0% {
+    transform: translate(-50%, -50%) scale(0.25);
+    opacity: 0.72;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(2.4);
+    opacity: 0;
+  }
+}
+@keyframes n2sacFriendSlideLeft {
+  0% {
+    opacity: 0;
+    transform: translate3d(-44px, 0, 0) scale(0.72) rotate(-10deg);
+  }
+  65% {
+    opacity: 1;
+    transform: translate3d(5px, 0, 0) scale(1.05) rotate(2deg);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1) rotate(0deg);
+  }
+}
+@keyframes n2sacFriendSlideRight {
+  0% {
+    opacity: 0;
+    transform: translate3d(44px, 0, 0) scale(0.72) rotate(10deg);
+  }
+  65% {
+    opacity: 1;
+    transform: translate3d(-5px, 0, 0) scale(1.05) rotate(-2deg);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1) rotate(0deg);
+  }
+}
+@keyframes n2sacFriendBadgePop {
+  0% {
+    opacity: 0;
+    transform: scale(0.2) rotate(-24deg);
+  }
+  65% {
+    opacity: 1;
+    transform: scale(1.18) rotate(8deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+@keyframes n2sacFriendConfetti {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) scale(0.3) rotate(0deg);
+  }
+  18% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--tx), var(--ty), 0) scale(1) rotate(var(--rot));
+  }
+}
+.n2sac-friend-ripple {
+  animation: n2sacFriendRipple 1400ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.n2sac-friend-avatar-l {
+  animation: n2sacFriendSlideLeft 640ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.n2sac-friend-avatar-r {
+  animation: n2sacFriendSlideRight 640ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.n2sac-friend-badge {
+  animation: n2sacFriendBadgePop 560ms 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.n2sac-friend-confetti {
+  animation: n2sacFriendConfetti 1100ms 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .n2sac-friend-ripple,
+  .n2sac-friend-avatar-l,
+  .n2sac-friend-avatar-r,
+  .n2sac-friend-badge,
+  .n2sac-friend-confetti {
+    animation: none !important;
   }
 }

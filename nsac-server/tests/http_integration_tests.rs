@@ -1546,3 +1546,62 @@ async fn expired_nsac_session_with_changed_password_returns_401_without_leaking_
     assert_error_json(&r_fail, StatusCode::UNAUTHORIZED, "INVALID_NSAC_CREDENTIALS");
     assert_no_secrets_in_resp(&r_fail, &[old_pass, new_pass, &token, "auth_sess_old"]);
 }
+
+#[tokio::test]
+async fn telemetry_enforces_payload_limit_and_rate_limit_without_runtime_ddl() {
+    let server = MockServer::start().await;
+    let (_state, router, _, _, _pool) = setup_app_with_mock(&server, 2).await;
+    let suffix = unique_suffix();
+    let fp = format!("test-device-fp-{suffix}");
+
+    // Oversized body (> 16 KB) MUST be rejected with 413 Payload Too Large.
+    let huge_body = serde_json::json!({
+        "event_type": "performance",
+        "app_version": "1.2.4",
+        "platform": "web",
+        "device_fingerprint": fp,
+        "hardware": { "blob": "X".repeat(20_000) },
+        "metrics": {}
+    })
+    .to_string();
+    let r_huge = send_req(
+        &router,
+        Method::POST,
+        "/api/v1/telemetry",
+        vec![("Content-Type", "application/json")],
+        Some(huge_body.into_bytes()),
+    )
+    .await;
+    assert_eq!(r_huge.status, StatusCode::PAYLOAD_TOO_LARGE);
+
+    // Valid small payloads succeed up to the per-device 12/min budget, then 429 Too Many Requests.
+    let ok_body = serde_json::json!({
+        "event_type": "performance",
+        "app_version": "1.2.4",
+        "platform": "web",
+        "device_fingerprint": fp,
+        "hardware": { "cpu_cores": 8 },
+        "metrics": { "fps_avg": 60.0 }
+    })
+    .to_string();
+    for i in 0..12 {
+        let r = send_req(
+            &router,
+            Method::POST,
+            "/api/v1/telemetry",
+            vec![("Content-Type", "application/json")],
+            Some(ok_body.as_bytes().to_vec()),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::CREATED, "request #{i} should succeed");
+    }
+    let r_limited = send_req(
+        &router,
+        Method::POST,
+        "/api/v1/telemetry",
+        vec![("Content-Type", "application/json")],
+        Some(ok_body.as_bytes().to_vec()),
+    )
+    .await;
+    assert_eq!(r_limited.status, StatusCode::TOO_MANY_REQUESTS);
+}
