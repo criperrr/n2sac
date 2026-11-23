@@ -131,6 +131,7 @@ jobs:
             "${BUILDER_IMAGE}" \
             bash -lc '
               set -euo pipefail
+              trap '\''chown -R "${HOST_UID}:${HOST_GID}" /workspace/app 2>/dev/null || true'\'' EXIT
               cp /workspace/app/android/app/build.gradle /tmp/build.gradle.orig
               cd /workspace/app
               npm ci --prefer-offline
@@ -141,12 +142,6 @@ jobs:
               cp /tmp/build.gradle.orig /workspace/app/android/app/build.gradle
               cd /workspace/app/android
               ./gradlew --no-daemon assembleRelease
-              chown -R "${HOST_UID}:${HOST_GID}" \
-                /workspace/app/node_modules \
-                /workspace/app/dist \
-                /workspace/app/android/app/build \
-                /workspace/app/android/app/src/main/assets \
-                /workspace/app/android/capacitor-cordova-android-plugins 2>/dev/null || true
             '
 
       - name: Verify APK signature against production assetlinks.json fingerprints & compute SHA-256
