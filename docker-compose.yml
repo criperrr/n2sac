@@ -47,32 +47,5 @@ services:
     volumes:
       - ./secrets/firebase-service-account.json:/secrets/firebase-service-account.json:ro
 
-  web:
-    build:
-      context: .
-      dockerfile: Dockerfile.web
-      network: host
-    image: n2sac-web:latest
-    container_name: n2sac-web
-    network_mode: host
-    restart: unless-stopped
-    stop_grace_period: 15s
-    depends_on:
-      nsac-server:
-        condition: service_healthy
-
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: n2sac-cloudflared
-    network_mode: host
-    restart: unless-stopped
-    stop_grace_period: 15s
-    depends_on:
-      web:
-        condition: service_started
-      nsac-server:
-        condition: service_healthy
-    command: ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8080"]
-
 volumes:
   n2sac_pgdata:

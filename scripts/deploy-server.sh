@@ -9,16 +9,13 @@ REMOTE_DIR="${N2SAC_REMOTE_DIR:-/opt/n2sac}"
 echo "[deploy-server] Syncing backend sources to ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}..."
 rsync -az --delete \
   --exclude 'target/' \
-  --exclude 'app/node_modules/' \
-  --exclude 'app/android/' \
-  --exclude 'app/dist/' \
   --exclude '.git/' \
   --exclude '.agents/' \
   --exclude 'secrets/' \
+  --exclude 'e2e/' \
   --exclude 'scripts/admin-db-panel/' \
   --exclude 'scripts/dev-local/' \
   --exclude 'docker-compose.test.yml' \
-  --exclude 'deploy/nginx.test.conf' \
   --exclude '.env' \
   "${ROOT_DIR}/" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/"
 

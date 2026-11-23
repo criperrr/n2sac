@@ -1,17 +1,16 @@
 /target
 .env
 .env.*
+!.env.example
 secrets/
 *firebase-adminsdk*.json
-google-services.json
-app/node_modules/
-app/dist/
-app/android/app/build/
-app/android/build/
-app/android/.gradle/
-app/android/capacitor-cordova-android-plugins/build/
 *.log
 .DS_Store
+
+# Python E2E cache
+__pycache__/
+*.pyc
+.pytest_cache/
 
 # AI agent configurations and local memory (never push to remote)
 .agents/
@@ -25,3 +24,4 @@ GEMINI.md
 
 # Local test environment runtime files
 scripts/dev-local/.run/
+scripts/admin-db-panel/.server.log

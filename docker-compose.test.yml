@@ -1,0 +1,51 @@
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: n2sac-test-postgres
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 20s
+    command: ["postgres", "-p", "5433"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-n2sac}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-n2sac_test_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-nsac_test}
+    volumes:
+      - n2sac_test_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5433 -U ${POSTGRES_USER:-n2sac} -d ${POSTGRES_DB:-nsac_test}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  nsac-server-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+    image: n2sac-test-server:latest
+    container_name: n2sac-test-server
+    network_mode: host
+    restart: unless-stopped
+    stop_signal: SIGTERM
+    stop_grace_period: 20s
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    environment:
+      HTTP_BIND: 0.0.0.0:3001
+      RUST_LOG: ${RUST_LOG:-info,nsac_server=info,nsac_core=info}
+      DATABASE_URL: postgres://${POSTGRES_USER:-n2sac}:${POSTGRES_PASSWORD:-n2sac_test_pass}@127.0.0.1:5433/${POSTGRES_DB:-nsac_test}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      SERVICE_API_KEYS: ${SERVICE_API_KEYS:-}
+      DISCORD_ENABLED: "false"
+      FCM_ENABLED: ${FCM_ENABLED:-true}
+      FCM_PROJECT_ID: ${FCM_PROJECT_ID:-n2sac-7b9dc}
+      CACHE_AUTH_TTL_SECS: 30
+      CACHE_BOLETIM_TTL_SECS: 120
+      CACHE_SNAPSHOT_TTL_SECS: 300
+    volumes:
+      - /opt/n2sac/secrets/firebase-service-account.json:/secrets/firebase-service-account.json:ro
+
+volumes:
+  n2sac_test_pgdata:
