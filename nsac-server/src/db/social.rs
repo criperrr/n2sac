@@ -12,6 +12,10 @@ use crate::error::ServerError;
 pub const MAX_MESSAGE_CHARS: usize = 500;
 pub const MESSAGE_RATE_LIMIT_COUNT: i64 = 10;
 pub const MESSAGE_RATE_LIMIT_WINDOW_SECS: i64 = 180;
+/// Own messages can be edited for this long after sending.
+pub const MESSAGE_EDIT_WINDOW_SECS: i64 = 15 * 60;
+/// Reactions accepted by the server (one per person per message).
+pub const ALLOWED_REACTIONS: [&str; 8] = ["👍", "❤️", "😂", "😮", "😢", "🔥", "🎉", "💯"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -108,8 +112,31 @@ pub struct ChatMessage {
     pub id: i64,
     pub sender_id: i64,
     pub is_me: bool,
+    /// Empty when `deleted` (unsent for everyone).
     pub text: String,
     pub created_at: DateTime<Utc>,
+    pub edited_at: Option<DateTime<Utc>>,
+    pub deleted: bool,
+    pub reply_to: Option<ChatReplyPreview>,
+    pub reactions: Vec<ChatReaction>,
+    /// Revision of the last change to this message (see `ConversationMessagesPayload::next_rev`).
+    pub rev: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatReplyPreview {
+    pub id: i64,
+    pub sender_id: i64,
+    pub is_me: bool,
+    pub text: String,
+    pub deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatReaction {
+    pub emoji: String,
+    pub count: i64,
+    pub mine: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -127,6 +154,26 @@ pub struct ConversationMessagesPayload {
     pub blocked: bool,
     pub messages: Vec<ChatMessage>,
     pub rate_limit: ChatRateLimitStatus,
+    /// Highest message id the peer has read (read receipts).
+    pub peer_last_read_id: i64,
+    /// Set by the route from the in-memory typing cache.
+    pub peer_typing: bool,
+    /// Cursor for the next `after_rev` poll.
+    pub next_rev: i64,
+    /// Older messages exist before the first returned one (only for latest/`before_id` loads).
+    pub has_more_before: bool,
+}
+
+/// Which slice of a conversation to load.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MessageQuery {
+    /// Legacy incremental poll: messages with `id > after_id`.
+    pub after_id: Option<i64>,
+    /// Older page: messages with `id < before_id`.
+    pub before_id: Option<i64>,
+    /// Sync poll: new and changed messages with `rev > after_rev`.
+    pub after_rev: Option<i64>,
+    pub limit: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -210,6 +257,17 @@ struct MessageSqlRow {
     sender_id: i64,
     body_ciphertext: String,
     created_at: DateTime<Utc>,
+    reply_to_id: Option<i64>,
+    edited_at: Option<DateTime<Utc>>,
+    deleted_at: Option<DateTime<Utc>>,
+    rev: i64,
+}
+
+#[derive(FromRow)]
+struct ReactionSqlRow {
+    message_id: i64,
+    account_id: i64,
+    emoji: String,
 }
 
 #[derive(FromRow)]
@@ -830,7 +888,7 @@ impl SocialRepo {
 
             let last_msg = sqlx::query_as::<_, MessageSqlRow>(
                 r#"
-                SELECT id, sender_id, body_ciphertext, created_at
+                SELECT id, sender_id, body_ciphertext, created_at, reply_to_id, edited_at, deleted_at, rev
                 FROM social_messages
                 WHERE pair_low = $1 AND pair_high = $2 AND id > $3
                 ORDER BY id DESC
@@ -893,10 +951,14 @@ impl SocialRepo {
             let (last_message_id, last_message_preview, last_message_sender_id, last_message_at) =
                 match last_msg {
                     Some(m) => {
-                        let preview = crypto
-                            .decrypt(&m.body_ciphertext)
-                            .ok()
-                            .map(|s| truncate_preview(s.as_str(), 72));
+                        let preview = if m.deleted_at.is_some() {
+                            Some("Mensagem apagada".to_string())
+                        } else {
+                            crypto
+                                .decrypt(&m.body_ciphertext)
+                                .ok()
+                                .map(|s| truncate_preview(s.as_str(), 72))
+                        };
                         (Some(m.id), preview, Some(m.sender_id), Some(m.created_at))
                     }
                     None => (None, None, None, None),
@@ -962,104 +1024,319 @@ impl SocialRepo {
         })
     }
 
-    pub async fn get_messages(
-        &self,
-        viewer: i64,
-        peer_id: i64,
-        after_id: Option<i64>,
-        limit: i64,
-        crypto: &CryptoService,
-    ) -> Result<ConversationMessagesPayload, ServerError> {
+    /// Rejects blocked pairs; returns the relationship otherwise.
+    async fn chat_relationship(&self, viewer: i64, peer_id: i64) -> Result<RelationshipStatus, ServerError> {
         if viewer == peer_id {
-            return Err(ServerError::invalid_params("Conversa inválida."));
+            return Err(user_error(nsac_core::error::ErrorCode::InvalidParams, "Conversa inválida."));
         }
         let rel = self.relationship(viewer, peer_id).await?;
-        let blocked = rel.blocked_by_me || rel.blocked_me;
-        if blocked {
+        if rel.blocked_by_me || rel.blocked_me {
             return Err(ServerError::with_user_message(
                 nsac_core::error::ErrorCode::Forbidden,
                 "Esta conversa está indisponível devido a um bloqueio.",
                 "Conversation blocked",
             ));
         }
-        let peer_row = self
-            .fetch_user_row(peer_id)
-            .await?
-            .ok_or_else(|| ServerError::not_found("Account not found"))?;
-        let peer = peer_row.to_summary(rel.outgoing, rel.incoming);
+        Ok(rel)
+    }
 
-        let (low, high) = ordered_pair(viewer, peer_id);
-        let cleared_before: i64 = sqlx::query_scalar(
-            r#"
-            SELECT cleared_before_message_id
-            FROM social_conversation_state
-            WHERE account_id = $1 AND peer_id = $2
-            "#,
+    fn require_friend(rel: &RelationshipStatus) -> Result<(), ServerError> {
+        if rel.is_friend {
+            Ok(())
+        } else {
+            Err(ServerError::with_user_message(
+                nsac_core::error::ErrorCode::Forbidden,
+                "Vocês precisam ser amigos (seguir um ao outro) para conversar.",
+                "Not mutual friends",
+            ))
+        }
+    }
+
+    async fn cleared_before(&self, viewer: i64, peer_id: i64) -> Result<i64, ServerError> {
+        Ok(sqlx::query_scalar(
+            "SELECT cleared_before_message_id FROM social_conversation_state WHERE account_id = $1 AND peer_id = $2",
         )
         .bind(viewer)
         .bind(peer_id)
         .fetch_optional(&self.pool)
         .await?
-        .unwrap_or(0);
+        .unwrap_or(0))
+    }
 
-        let floor_id = after_id.map_or(cleared_before, |a| a.max(cleared_before));
-        let capped_limit = limit.clamp(1, 100);
-
-        let mut rows = sqlx::query_as::<_, MessageSqlRow>(
+    async fn mark_read(&self, viewer: i64, peer_id: i64, message_id: i64) -> Result<(), ServerError> {
+        sqlx::query(
             r#"
-            SELECT id, sender_id, body_ciphertext, created_at
-            FROM social_messages
-            WHERE pair_low = $1 AND pair_high = $2 AND id > $3
-            ORDER BY id DESC
-            LIMIT $4
+            INSERT INTO social_conversation_state (account_id, peer_id, last_read_message_id, cleared_before_message_id, updated_at)
+            VALUES ($1, $2, $3, 0, NOW())
+            ON CONFLICT (account_id, peer_id) DO UPDATE SET
+                last_read_message_id = GREATEST(social_conversation_state.last_read_message_id, EXCLUDED.last_read_message_id),
+                updated_at = NOW()
             "#,
+        )
+        .bind(viewer)
+        .bind(peer_id)
+        .bind(message_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Loads one message of the pair (any state).
+    async fn pair_message(&self, low: i64, high: i64, message_id: i64) -> Result<MessageSqlRow, ServerError> {
+        sqlx::query_as::<_, MessageSqlRow>(
+            r#"
+            SELECT id, sender_id, body_ciphertext, created_at, reply_to_id, edited_at, deleted_at, rev
+            FROM social_messages
+            WHERE id = $1 AND pair_low = $2 AND pair_high = $3
+            "#,
+        )
+        .bind(message_id)
+        .bind(low)
+        .bind(high)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| user_error(nsac_core::error::ErrorCode::NotFound, "Mensagem não encontrada."))
+    }
+
+    /// Decrypts rows and attaches reply previews and reactions.
+    async fn hydrate_messages(
+        &self,
+        viewer: i64,
+        low: i64,
+        high: i64,
+        rows: Vec<MessageSqlRow>,
+        crypto: &CryptoService,
+    ) -> Result<Vec<ChatMessage>, ServerError> {
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        let reply_ids: Vec<i64> = rows.iter().filter_map(|r| r.reply_to_id).collect();
+
+        let reactions = sqlx::query_as::<_, ReactionSqlRow>(
+            r#"
+            SELECT message_id, account_id, emoji
+            FROM social_message_reactions
+            WHERE message_id = ANY($1)
+            ORDER BY created_at ASC
+            "#,
+        )
+        .bind(&ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let replies = if reply_ids.is_empty() {
+            Vec::new()
+        } else {
+            sqlx::query_as::<_, MessageSqlRow>(
+                r#"
+                SELECT id, sender_id, body_ciphertext, created_at, reply_to_id, edited_at, deleted_at, rev
+                FROM social_messages
+                WHERE id = ANY($1) AND pair_low = $2 AND pair_high = $3
+                "#,
+            )
+            .bind(&reply_ids)
+            .bind(low)
+            .bind(high)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        let reply_map: std::collections::HashMap<i64, ChatReplyPreview> = replies
+            .into_iter()
+            .map(|r| {
+                let deleted = r.deleted_at.is_some();
+                let text = if deleted {
+                    String::new()
+                } else {
+                    crypto
+                        .decrypt(&r.body_ciphertext)
+                        .map(|s| truncate_preview(s.as_str(), 140))
+                        .unwrap_or_default()
+                };
+                (
+                    r.id,
+                    ChatReplyPreview { id: r.id, sender_id: r.sender_id, is_me: r.sender_id == viewer, text, deleted },
+                )
+            })
+            .collect();
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let deleted = r.deleted_at.is_some();
+            let text = if deleted {
+                String::new()
+            } else {
+                match crypto.decrypt(&r.body_ciphertext) {
+                    Ok(plain) => plain.as_str().to_string(),
+                    Err(_) => continue,
+                }
+            };
+            let mut grouped: Vec<ChatReaction> = Vec::new();
+            if !deleted {
+                for re in reactions.iter().filter(|re| re.message_id == r.id) {
+                    match grouped.iter_mut().find(|g| g.emoji == re.emoji) {
+                        Some(g) => {
+                            g.count += 1;
+                            g.mine |= re.account_id == viewer;
+                        }
+                        None => grouped.push(ChatReaction {
+                            emoji: re.emoji.clone(),
+                            count: 1,
+                            mine: re.account_id == viewer,
+                        }),
+                    }
+                }
+            }
+            out.push(ChatMessage {
+                id: r.id,
+                sender_id: r.sender_id,
+                is_me: r.sender_id == viewer,
+                text,
+                created_at: r.created_at,
+                edited_at: r.edited_at,
+                deleted,
+                reply_to: if deleted { None } else { r.reply_to_id.and_then(|id| reply_map.get(&id).cloned()) },
+                reactions: grouped,
+                rev: r.rev,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn hydrate_one(
+        &self,
+        viewer: i64,
+        low: i64,
+        high: i64,
+        row: MessageSqlRow,
+        crypto: &CryptoService,
+    ) -> Result<ChatMessage, ServerError> {
+        self.hydrate_messages(viewer, low, high, vec![row], crypto)
+            .await?
+            .pop()
+            .ok_or_else(|| ServerError::internal("Falha ao ler a mensagem."))
+    }
+
+    pub async fn get_messages(
+        &self,
+        viewer: i64,
+        peer_id: i64,
+        query: MessageQuery,
+        crypto: &CryptoService,
+    ) -> Result<ConversationMessagesPayload, ServerError> {
+        let rel = self.chat_relationship(viewer, peer_id).await?;
+        let peer_row = self
+            .fetch_user_row(peer_id)
+            .await?
+            .ok_or_else(|| user_error(nsac_core::error::ErrorCode::NotFound, "Account not found"))?;
+        let peer = peer_row.to_summary(rel.outgoing, rel.incoming);
+
+        let (low, high) = ordered_pair(viewer, peer_id);
+        let cleared_before = self.cleared_before(viewer, peer_id).await?;
+        let capped_limit = query.limit.clamp(1, 100);
+
+        let max_rev: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(rev), 0)::bigint FROM social_messages WHERE pair_low = $1 AND pair_high = $2 AND id > $3",
         )
         .bind(low)
         .bind(high)
-        .bind(floor_id)
-        .bind(capped_limit)
-        .fetch_all(&self.pool)
+        .bind(cleared_before)
+        .fetch_one(&self.pool)
         .await?;
-        rows.reverse();
 
-        if let Some(last) = rows.last() {
-            sqlx::query(
+        let (rows, next_rev, check_older) = if let Some(after_rev) = query.after_rev {
+            let rows = sqlx::query_as::<_, MessageSqlRow>(
                 r#"
-                INSERT INTO social_conversation_state (account_id, peer_id, last_read_message_id, cleared_before_message_id, updated_at)
-                VALUES ($1, $2, $3, 0, NOW())
-                ON CONFLICT (account_id, peer_id) DO UPDATE SET
-                    last_read_message_id = GREATEST(social_conversation_state.last_read_message_id, EXCLUDED.last_read_message_id),
-                    updated_at = NOW()
+                SELECT id, sender_id, body_ciphertext, created_at, reply_to_id, edited_at, deleted_at, rev
+                FROM social_messages
+                WHERE pair_low = $1 AND pair_high = $2 AND id > $3 AND rev > $4
+                ORDER BY rev ASC
+                LIMIT $5
                 "#,
             )
-            .bind(viewer)
-            .bind(peer_id)
-            .bind(last.id)
-            .execute(&self.pool)
+            .bind(low)
+            .bind(high)
+            .bind(cleared_before)
+            .bind(after_rev)
+            .bind(capped_limit)
+            .fetch_all(&self.pool)
             .await?;
+            // A truncated page continues from its last revision instead of skipping ahead.
+            let next = if rows.len() as i64 == capped_limit {
+                rows.last().map_or(max_rev, |r| r.rev)
+            } else {
+                max_rev
+            };
+            let mut rows = rows;
+            rows.sort_by_key(|r| r.id);
+            (rows, next, false)
+        } else {
+            let (floor, ceiling) = match (query.before_id, query.after_id) {
+                (Some(before), _) => (cleared_before, before),
+                (None, Some(after)) => (after.max(cleared_before), i64::MAX),
+                (None, None) => (cleared_before, i64::MAX),
+            };
+            let mut rows = sqlx::query_as::<_, MessageSqlRow>(
+                r#"
+                SELECT id, sender_id, body_ciphertext, created_at, reply_to_id, edited_at, deleted_at, rev
+                FROM social_messages
+                WHERE pair_low = $1 AND pair_high = $2 AND id > $3 AND id < $4
+                ORDER BY id DESC
+                LIMIT $5
+                "#,
+            )
+            .bind(low)
+            .bind(high)
+            .bind(floor)
+            .bind(ceiling)
+            .bind(capped_limit)
+            .fetch_all(&self.pool)
+            .await?;
+            rows.reverse();
+            (rows, max_rev, query.after_id.is_none())
+        };
+
+        let has_more_before = match (check_older, rows.first()) {
+            (true, Some(first)) => sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM social_messages WHERE pair_low = $1 AND pair_high = $2 AND id > $3 AND id < $4)",
+            )
+            .bind(low)
+            .bind(high)
+            .bind(cleared_before)
+            .bind(first.id)
+            .fetch_one(&self.pool)
+            .await?,
+            _ => false,
+        };
+
+        if query.before_id.is_none()
+            && let Some(last_id) = rows.iter().map(|r| r.id).max()
+        {
+            self.mark_read(viewer, peer_id, last_id).await?;
         }
 
-        let mut messages = Vec::with_capacity(rows.len());
-        for r in rows {
-            if let Ok(plain) = crypto.decrypt(&r.body_ciphertext) {
-                messages.push(ChatMessage {
-                    id: r.id,
-                    sender_id: r.sender_id,
-                    is_me: r.sender_id == viewer,
-                    text: plain.as_str().to_string(),
-                    created_at: r.created_at,
-                });
-            }
-        }
+        let peer_last_read_id: i64 = sqlx::query_scalar(
+            "SELECT last_read_message_id FROM social_conversation_state WHERE account_id = $1 AND peer_id = $2",
+        )
+        .bind(peer_id)
+        .bind(viewer)
+        .fetch_optional(&self.pool)
+        .await?
+        .unwrap_or(0);
 
+        let messages = self.hydrate_messages(viewer, low, high, rows, crypto).await?;
         let rate_limit = self.message_rate_limit_status(viewer).await?;
 
         Ok(ConversationMessagesPayload {
             peer,
             is_friend: rel.is_friend,
-            blocked,
+            blocked: false,
             messages,
             rate_limit,
+            peer_last_read_id,
+            peer_typing: false,
+            next_rev,
+            has_more_before,
         })
     }
 
@@ -1068,27 +1345,14 @@ impl SocialRepo {
         sender_id: i64,
         peer_id: i64,
         raw_text: &str,
+        reply_to_id: Option<i64>,
         crypto: &CryptoService,
     ) -> Result<SendMessagePayload, ServerError> {
         if sender_id == peer_id {
-            return Err(ServerError::invalid_params("Você não pode enviar mensagem para si mesmo."));
+            return Err(user_error(nsac_core::error::ErrorCode::InvalidParams, "Você não pode enviar mensagem para si mesmo."));
         }
-
-        let rel = self.relationship(sender_id, peer_id).await?;
-        if rel.blocked_by_me || rel.blocked_me {
-            return Err(ServerError::with_user_message(
-                nsac_core::error::ErrorCode::Forbidden,
-                "Não é possível enviar mensagens devido a um bloqueio.",
-                "Message blocked",
-            ));
-        }
-        if !rel.is_friend {
-            return Err(ServerError::with_user_message(
-                nsac_core::error::ErrorCode::Forbidden,
-                "Vocês precisam ser amigos (seguir um ao outro) para enviar mensagens.",
-                "Not mutual friends",
-            ));
-        }
+        let rel = self.chat_relationship(sender_id, peer_id).await?;
+        Self::require_friend(&rel)?;
 
         let trimmed = validate_message_text(raw_text)?;
         let rate = self.message_rate_limit_status(sender_id).await?;
@@ -1102,50 +1366,186 @@ impl SocialRepo {
             ));
         }
 
-        let ciphertext = crypto.encrypt(trimmed)?;
         let (low, high) = ordered_pair(sender_id, peer_id);
+        if let Some(reply_id) = reply_to_id {
+            let target = self.pair_message(low, high, reply_id).await?;
+            if target.deleted_at.is_some() {
+                return Err(user_error(nsac_core::error::ErrorCode::InvalidParams, "Não é possível responder a uma mensagem apagada."));
+            }
+        }
 
+        let ciphertext = crypto.encrypt(trimmed)?;
         let inserted = sqlx::query_as::<_, MessageSqlRow>(
             r#"
-            INSERT INTO social_messages (pair_low, pair_high, sender_id, body_ciphertext, created_at)
-            VALUES ($1, $2, $3, $4, NOW())
-            RETURNING id, sender_id, body_ciphertext, created_at
+            INSERT INTO social_messages (pair_low, pair_high, sender_id, body_ciphertext, reply_to_id, created_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
+            RETURNING id, sender_id, body_ciphertext, created_at, reply_to_id, edited_at, deleted_at, rev
             "#,
         )
         .bind(low)
         .bind(high)
         .bind(sender_id)
         .bind(&ciphertext)
+        .bind(reply_to_id)
         .fetch_one(&self.pool)
         .await?;
 
-        sqlx::query(
+        self.mark_read(sender_id, peer_id, inserted.id).await?;
+        let updated_rate = self.message_rate_limit_status(sender_id).await?;
+        let message = self.hydrate_one(sender_id, low, high, inserted, crypto).await?;
+
+        Ok(SendMessagePayload { message, rate_limit: updated_rate })
+    }
+
+    /// Edits one of the viewer's own messages within `MESSAGE_EDIT_WINDOW_SECS`.
+    pub async fn edit_message(
+        &self,
+        viewer: i64,
+        peer_id: i64,
+        message_id: i64,
+        raw_text: &str,
+        crypto: &CryptoService,
+    ) -> Result<ChatMessage, ServerError> {
+        let rel = self.chat_relationship(viewer, peer_id).await?;
+        Self::require_friend(&rel)?;
+        let trimmed = validate_message_text(raw_text)?;
+        let (low, high) = ordered_pair(viewer, peer_id);
+        let current = self.pair_message(low, high, message_id).await?;
+        if current.sender_id != viewer {
+            return Err(ServerError::with_user_message(
+                nsac_core::error::ErrorCode::Forbidden,
+                "Você só pode editar suas próprias mensagens.",
+                "Edit of foreign message",
+            ));
+        }
+        if current.deleted_at.is_some() {
+            return Err(user_error(nsac_core::error::ErrorCode::InvalidParams, "Esta mensagem foi apagada."));
+        }
+        if (Utc::now() - current.created_at).num_seconds() > MESSAGE_EDIT_WINDOW_SECS {
+            return Err(ServerError::with_user_message(
+                nsac_core::error::ErrorCode::Forbidden,
+                "Mensagens só podem ser editadas até 15 minutos depois do envio.",
+                "Edit window expired",
+            ));
+        }
+        let ciphertext = crypto.encrypt(trimmed)?;
+        let row = sqlx::query_as::<_, MessageSqlRow>(
             r#"
-            INSERT INTO social_conversation_state (account_id, peer_id, last_read_message_id, cleared_before_message_id, updated_at)
-            VALUES ($1, $2, $3, 0, NOW())
-            ON CONFLICT (account_id, peer_id) DO UPDATE SET
-                last_read_message_id = GREATEST(social_conversation_state.last_read_message_id, EXCLUDED.last_read_message_id),
-                updated_at = NOW()
+            UPDATE social_messages
+            SET body_ciphertext = $1, edited_at = NOW(), rev = nextval('social_messages_rev_seq')
+            WHERE id = $2
+            RETURNING id, sender_id, body_ciphertext, created_at, reply_to_id, edited_at, deleted_at, rev
             "#,
         )
-        .bind(sender_id)
-        .bind(peer_id)
-        .bind(inserted.id)
-        .execute(&self.pool)
+        .bind(&ciphertext)
+        .bind(message_id)
+        .fetch_one(&self.pool)
         .await?;
+        self.hydrate_one(viewer, low, high, row, crypto).await
+    }
 
-        let updated_rate = self.message_rate_limit_status(sender_id).await?;
+    /// Unsends one of the viewer's own messages for both people (the row stays as a tombstone).
+    pub async fn unsend_message(
+        &self,
+        viewer: i64,
+        peer_id: i64,
+        message_id: i64,
+        crypto: &CryptoService,
+    ) -> Result<ChatMessage, ServerError> {
+        self.chat_relationship(viewer, peer_id).await?;
+        let (low, high) = ordered_pair(viewer, peer_id);
+        let current = self.pair_message(low, high, message_id).await?;
+        if current.sender_id != viewer {
+            return Err(ServerError::with_user_message(
+                nsac_core::error::ErrorCode::Forbidden,
+                "Você só pode apagar suas próprias mensagens.",
+                "Unsend of foreign message",
+            ));
+        }
+        let row = if current.deleted_at.is_some() {
+            current
+        } else {
+            let empty = crypto.encrypt("")?;
+            let mut tx = self.pool.begin().await?;
+            sqlx::query("DELETE FROM social_message_reactions WHERE message_id = $1")
+                .bind(message_id)
+                .execute(&mut *tx)
+                .await?;
+            let row = sqlx::query_as::<_, MessageSqlRow>(
+                r#"
+                UPDATE social_messages
+                SET body_ciphertext = $1, deleted_at = NOW(), rev = nextval('social_messages_rev_seq')
+                WHERE id = $2
+                RETURNING id, sender_id, body_ciphertext, created_at, reply_to_id, edited_at, deleted_at, rev
+                "#,
+            )
+            .bind(&empty)
+            .bind(message_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            row
+        };
+        self.hydrate_one(viewer, low, high, row, crypto).await
+    }
 
-        Ok(SendMessagePayload {
-            message: ChatMessage {
-                id: inserted.id,
-                sender_id,
-                is_me: true,
-                text: trimmed.to_string(),
-                created_at: inserted.created_at,
-            },
-            rate_limit: updated_rate,
-        })
+    /// Sets (or clears, with `None`) the viewer's reaction on a message of the conversation.
+    pub async fn set_reaction(
+        &self,
+        viewer: i64,
+        peer_id: i64,
+        message_id: i64,
+        emoji: Option<&str>,
+        crypto: &CryptoService,
+    ) -> Result<ChatMessage, ServerError> {
+        let rel = self.chat_relationship(viewer, peer_id).await?;
+        Self::require_friend(&rel)?;
+        if let Some(e) = emoji
+            && !ALLOWED_REACTIONS.contains(&e)
+        {
+            return Err(user_error(nsac_core::error::ErrorCode::InvalidParams, "Reação inválida."));
+        }
+        let (low, high) = ordered_pair(viewer, peer_id);
+        let current = self.pair_message(low, high, message_id).await?;
+        if current.deleted_at.is_some() {
+            return Err(user_error(nsac_core::error::ErrorCode::InvalidParams, "Esta mensagem foi apagada."));
+        }
+        let mut tx = self.pool.begin().await?;
+        match emoji {
+            Some(e) => {
+                sqlx::query(
+                    r#"
+                    INSERT INTO social_message_reactions (message_id, account_id, emoji, created_at)
+                    VALUES ($1, $2, $3, NOW())
+                    ON CONFLICT (message_id, account_id) DO UPDATE SET emoji = EXCLUDED.emoji, created_at = NOW()
+                    "#,
+                )
+                .bind(message_id)
+                .bind(viewer)
+                .bind(e)
+                .execute(&mut *tx)
+                .await?;
+            }
+            None => {
+                sqlx::query("DELETE FROM social_message_reactions WHERE message_id = $1 AND account_id = $2")
+                    .bind(message_id)
+                    .bind(viewer)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+        let row = sqlx::query_as::<_, MessageSqlRow>(
+            r#"
+            UPDATE social_messages SET rev = nextval('social_messages_rev_seq')
+            WHERE id = $1
+            RETURNING id, sender_id, body_ciphertext, created_at, reply_to_id, edited_at, deleted_at, rev
+            "#,
+        )
+        .bind(message_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.hydrate_one(viewer, low, high, row, crypto).await
     }
 
     pub async fn clear_conversation(
@@ -1179,6 +1579,10 @@ impl SocialRepo {
         .await?;
         Ok(())
     }
+}
+
+fn user_error(code: nsac_core::error::ErrorCode, message: &'static str) -> ServerError {
+    ServerError::with_user_message(code, message, message)
 }
 
 pub fn ordered_pair(a: i64, b: i64) -> (i64, i64) {
@@ -1215,7 +1619,30 @@ pub fn validate_message_text(raw: &str) -> Result<&str, ServerError> {
     Ok(trimmed)
 }
 
+/// Chat GIFs travel as `giphy:<g|s>:<id>:<w>x<h>` text; previews and pushes show a label instead.
+pub fn gif_message_label(text: &str) -> Option<&'static str> {
+    let mut parts = text.trim().split(':');
+    if parts.next()? != "giphy" {
+        return None;
+    }
+    let kind = parts.next()?;
+    let id = parts.next()?;
+    let dims = parts.next()?;
+    let valid = (4..=64).contains(&id.len())
+        && id.chars().all(|c| c.is_ascii_alphanumeric())
+        && dims.split_once('x').is_some_and(|(w, h)| !w.is_empty() && !h.is_empty() && w.chars().chain(h.chars()).all(|c| c.is_ascii_digit()))
+        && parts.next().is_none();
+    match (valid, kind) {
+        (true, "g") => Some("🎞️ GIF"),
+        (true, "s") => Some("🏷️ Figurinha"),
+        _ => None,
+    }
+}
+
 fn truncate_preview(text: &str, max_chars: usize) -> String {
+    if let Some(label) = gif_message_label(text) {
+        return label.to_string();
+    }
     let single_line: String = text
         .chars()
         .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
@@ -1279,6 +1706,15 @@ mod tests {
         assert!(validate_message_text(&ok_500).is_ok());
         let too_long = "é".repeat(501);
         assert!(validate_message_text(&too_long).is_err());
+    }
+
+    #[test]
+    fn gif_messages_get_a_label() {
+        assert_eq!(gif_message_label("giphy:g:abc123XYZ:480x270"), Some("🎞️ GIF"));
+        assert_eq!(gif_message_label("giphy:s:abc123XYZ:200x200"), Some("🏷️ Figurinha"));
+        assert_eq!(gif_message_label("giphy:g:abc:480x270"), None);
+        assert_eq!(gif_message_label("olha giphy:g:abc123XYZ:480x270"), None);
+        assert_eq!(truncate_preview("giphy:g:abc123XYZ:480x270", 72), "🎞️ GIF");
     }
 
     #[test]

@@ -47,6 +47,50 @@ const LAYOUT_PROPS = new Set([
 const SPRING_DAMPING = 0.78;
 const SPRING_STIFFNESS = 1400;
 
+export interface MorphSize {
+  w: number;
+  h: number;
+}
+
+/**
+ * Targeted M3 Expressive size-morph animation (same spring as `installContentSizeMorph`)
+ * for individual elements inside `[data-no-size-morph]` subtrees (such as an edited chat
+ * message bubble), avoiding global ResizeObserver overhead on 80+ list items.
+ */
+export function animateElementSizeMorph(el: HTMLElement, from: MorphSize, to: MorphSize): Animation | null {
+  if (prefersReducedMotion()) return null;
+  const dw = Math.abs(to.w - from.w) >= 1;
+  const dh = Math.abs(to.h - from.h) >= 1;
+  if (!dw && !dh) return null;
+  if (from.w <= 0 || from.h <= 0 || to.w <= 0 || to.h <= 0) return null;
+
+  const supportsLinear = CSS.supports?.('animation-timing-function', 'linear(0, 1)') ?? false;
+  const timing = supportsLinear
+    ? springToCss(SPRING_DAMPING, SPRING_STIFFNESS)
+    : { easing: EASING.emphasizedDecelerate, duration: 240 };
+
+  const startFrame: Keyframe = { boxSizing: 'border-box' };
+  const endFrame: Keyframe = { boxSizing: 'border-box' };
+  if (dw) {
+    startFrame.width = `${from.w}px`;
+    endFrame.width = `${to.w}px`;
+  }
+  if (dh) {
+    startFrame.height = `${from.h}px`;
+    endFrame.height = `${to.h}px`;
+  }
+
+  const prevOverflow = el.style.overflow;
+  el.style.overflow = 'hidden';
+  const anim = el.animate([startFrame, endFrame], { duration: timing.duration, easing: timing.easing });
+  const restore = () => {
+    el.style.overflow = prevOverflow;
+  };
+  anim.onfinish = restore;
+  anim.oncancel = restore;
+  return anim;
+}
+
 interface Size {
   w: number;
   h: number;

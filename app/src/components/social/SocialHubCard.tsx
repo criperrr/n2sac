@@ -1,3 +1,4 @@
+import { describeMessageText } from './chat/giphy';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Ban,
@@ -261,7 +262,7 @@ export const SocialHubCard: React.FC<{ token: string }> = ({ token }) => {
               marginTop: 2,
             }}
           >
-            {c.last_message_preview ?? 'Toque para iniciar a conversa'}
+            {c.last_message_preview ? describeMessageText(c.last_message_preview) : 'Toque para iniciar a conversa'}
           </div>
         </div>
       </div>

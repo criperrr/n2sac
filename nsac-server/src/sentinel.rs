@@ -15,7 +15,7 @@ use crate::db::{
     AccountSummary, GradePostingEvent, NewGradePostingEvent, SentinelClassState, SentinelRepo,
 };
 use crate::error::ServerError;
-use crate::fcm::{FcmClient, FcmDeliveryOutcome};
+use crate::fcm::{FcmClient, FcmDeliveryOutcome, StudentGradeHighlight};
 use crate::http::nsac_routes::canonicalize_boletim;
 use crate::ports::HeuristicObserver;
 use crate::state::AppState;
@@ -647,6 +647,14 @@ pub async fn poll_due_classes_once(
         class_state.next_check_at = now + chrono::Duration::seconds(hot_int);
         state.sentinel().upsert_class_state(&class_state).await?;
 
+        crate::discord::broadcast_discord_class_grade_update(
+            &state.db,
+            &class_state.class_code,
+            &new_events,
+            Some(&sentinel_boletim),
+        )
+        .await;
+
         let mut unique_subjects = BTreeSet::new();
         let mut unique_bimesters = BTreeSet::new();
         for ev in &new_events {
@@ -659,25 +667,76 @@ pub async fn poll_due_classes_once(
         let bimesters: Vec<u8> = unique_bimesters.into_iter().collect();
 
         // Persist the sentinel student's already-fetched boletim first
-        state
+        if let Err(err) = state
             .boletim()
             .upsert_boletim(chosen_sentinel_id, &sentinel_boletim)
-            .await?;
-        state.caches.invalidate_boletim(chosen_sentinel_id).await;
-        report.fanout_students_updated += 1;
+            .await
+        {
+            tracing::warn!(
+                class_code = %class_state.class_code,
+                student_account_id = chosen_sentinel_id,
+                error = %err,
+                "Failed to persist sentinel student's updated boletim"
+            );
+        } else {
+            state.caches.invalidate_boletim(chosen_sentinel_id).await;
+            report.fanout_students_updated += 1;
+        }
 
-        // Fan-out to remaining students in the class
+        // Fan-out to each student: update DB, send opt-in Discord DM, and immediately dispatch
+        // personalized high-priority FCM with their exact grade(s) without blocking the class.
         for student in &active_accounts {
-            if student.id != chosen_sentinel_id {
+            let mut personal_highlights: Vec<StudentGradeHighlight> = Vec::new();
+            if student.id == chosen_sentinel_id {
+                personal_highlights =
+                    extract_student_grade_highlights(&sentinel_boletim, &new_events);
+                if let Some(ref did) = student.discord_id {
+                    let _ = crate::discord::send_discord_personal_grade_dm(
+                        &state.db,
+                        student.id,
+                        did,
+                        &class_state.class_code,
+                        &new_events,
+                        &sentinel_boletim,
+                    )
+                    .await;
+                }
+            } else {
                 match fetch_account_boletim_with_refresh(state, student.id, now).await {
                     Ok(mut student_boletim) => {
                         canonicalize_boletim(&mut student_boletim);
-                        state
+                        personal_highlights =
+                            extract_student_grade_highlights(&student_boletim, &new_events);
+                        match state
                             .boletim()
                             .upsert_boletim(student.id, &student_boletim)
-                            .await?;
-                        state.caches.invalidate_boletim(student.id).await;
-                        report.fanout_students_updated += 1;
+                            .await
+                        {
+                            Ok(()) => {
+                                state.caches.invalidate_boletim(student.id).await;
+                                report.fanout_students_updated += 1;
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    class_code = %class_state.class_code,
+                                    student_account_id = student.id,
+                                    error = %err,
+                                    "Failed to persist student boletim during fan-out"
+                                );
+                            }
+                        }
+
+                        if let Some(ref did) = student.discord_id {
+                            let _ = crate::discord::send_discord_personal_grade_dm(
+                                &state.db,
+                                student.id,
+                                did,
+                                &class_state.class_code,
+                                &new_events,
+                                &student_boletim,
+                            )
+                            .await;
+                        }
                     }
                     Err(err) => {
                         tracing::warn!(
@@ -689,13 +748,25 @@ pub async fn poll_due_classes_once(
                     }
                 }
             }
-        }
 
-        // Dispatch FCM push notifications to all active students in the class with a token
-        for student in &active_accounts {
+            // Immediately dispatch high-priority FCM push for this student (if enabled in prefs).
             if let Some(token) = student.fcm_token.as_deref().filter(|t| !t.is_empty()) {
+                let grades_push_ok = state
+                    .classrooms()
+                    .is_grades_push_enabled(student.id)
+                    .await
+                    .unwrap_or(true);
+                if !grades_push_ok {
+                    continue;
+                }
                 match fcm
-                    .send_grade_notification(token, &class_state.class_code, &subjects, &bimesters)
+                    .send_grade_notification_detailed(
+                        token,
+                        &class_state.class_code,
+                        &subjects,
+                        &bimesters,
+                        &personal_highlights,
+                    )
                     .await
                 {
                     Ok(FcmDeliveryOutcome::Delivered { .. }) => {
@@ -705,7 +776,7 @@ pub async fn poll_due_classes_once(
                         let _ = state
                             .accounts()
                             .update_fcm_token(student.id, None, now)
-                            .await?;
+                            .await;
                         report.fcm_unregistered_cleared += 1;
                     }
                     Ok(FcmDeliveryOutcome::TransientFailure { .. }) | Err(_) => {
@@ -718,6 +789,218 @@ pub async fn poll_due_classes_once(
     }
 
     Ok(report)
+}
+
+/// Immediately handles a class-wide M.T. hash change discovered by a student's manual web/app
+/// refresh, using the pre-upsert `prev_boletim` snapshot so the exact changed subject(s) are
+/// never overwritten before Discord broadcast and classmate FCM/DM fan-out run.
+pub async fn handle_manual_refresh_class_change(
+    state: AppState,
+    class_code: String,
+    refreshed_account_id: i64,
+    prev_boletim: Option<AllYearsResponse>,
+    fresh_boletim: AllYearsResponse,
+    fresh_hash: String,
+) {
+    let now = state.clock.now();
+    let Ok(Some(mut class_state)) = state.sentinel().get_class_state(&class_code).await else {
+        return;
+    };
+    if class_state.last_class_hash.as_deref() == Some(fresh_hash.as_str()) {
+        return;
+    }
+
+    let new_events =
+        diff_class_grade_events(&class_code, prev_boletim.as_ref(), &fresh_boletim, now);
+    if let Err(err) = state
+        .sentinel()
+        .insert_posting_events_batch(&new_events)
+        .await
+    {
+        tracing::warn!(
+            class_code = %class_code,
+            error = %err,
+            "Failed to persist grade posting events from manual refresh"
+        );
+    }
+
+    let hot_dur = i64::try_from(state.config.sentinel.hot_duration_secs.max(1)).unwrap_or(7_200);
+    let hot_int = i64::try_from(state.config.sentinel.hot_min_interval_secs.max(1)).unwrap_or(120);
+
+    class_state.consecutive_errors = 0;
+    class_state.last_checked_at = Some(now);
+    class_state.last_class_hash = Some(fresh_hash);
+    class_state.last_change_detected_at = Some(now);
+    class_state.hot_until = Some(now + chrono::Duration::seconds(hot_dur));
+    class_state.current_certainty = 1.0;
+    class_state.current_interval_secs = hot_int;
+    class_state.next_check_at = now + chrono::Duration::seconds(hot_int);
+    class_state.updated_at = now;
+    if let Err(err) = state.sentinel().upsert_class_state(&class_state).await {
+        tracing::warn!(
+            class_code = %class_code,
+            error = %err,
+            "Failed to update sentinel class state from manual refresh"
+        );
+        return;
+    }
+
+    tracing::info!(
+        class_code = %class_code,
+        refreshed_account_id,
+        events = new_events.len(),
+        "Class grade hash change detected via manual web/app refresh — broadcasting to Discord & FCM"
+    );
+
+    crate::discord::broadcast_discord_class_grade_update(
+        &state.db,
+        &class_code,
+        &new_events,
+        Some(&fresh_boletim),
+    )
+    .await;
+
+    let Ok(active_accounts) = state.accounts().list_active_by_class(&class_code).await else {
+        return;
+    };
+
+    let mut unique_subjects = BTreeSet::new();
+    let mut unique_bimesters = BTreeSet::new();
+    for ev in &new_events {
+        unique_subjects.insert(ev.subject_name.clone());
+        if let Ok(b_u8) = u8::try_from(ev.bimester) {
+            unique_bimesters.insert(b_u8);
+        }
+    }
+    let subjects: Vec<String> = unique_subjects.into_iter().collect();
+    let bimesters: Vec<u8> = unique_bimesters.into_iter().collect();
+
+    for student in &active_accounts {
+        let mut personal_highlights: Vec<StudentGradeHighlight> = Vec::new();
+        if student.id == refreshed_account_id {
+            personal_highlights = extract_student_grade_highlights(&fresh_boletim, &new_events);
+            if let Some(ref did) = student.discord_id {
+                let _ = crate::discord::send_discord_personal_grade_dm(
+                    &state.db,
+                    student.id,
+                    did,
+                    &class_code,
+                    &new_events,
+                    &fresh_boletim,
+                )
+                .await;
+            }
+        } else if let Ok(mut student_boletim) =
+            fetch_account_boletim_with_refresh(&state, student.id, now).await
+        {
+            canonicalize_boletim(&mut student_boletim);
+            personal_highlights = extract_student_grade_highlights(&student_boletim, &new_events);
+            if state
+                .boletim()
+                .upsert_boletim(student.id, &student_boletim)
+                .await
+                .is_ok()
+            {
+                state.caches.invalidate_boletim(student.id).await;
+            }
+            if let Some(ref did) = student.discord_id {
+                let _ = crate::discord::send_discord_personal_grade_dm(
+                    &state.db,
+                    student.id,
+                    did,
+                    &class_code,
+                    &new_events,
+                    &student_boletim,
+                )
+                .await;
+            }
+        }
+
+        if let Some(token) = student.fcm_token.as_deref().filter(|t| !t.is_empty()) {
+            let grades_push_ok = state
+                .classrooms()
+                .is_grades_push_enabled(student.id)
+                .await
+                .unwrap_or(true);
+            if !grades_push_ok {
+                continue;
+            }
+            if let Ok(FcmDeliveryOutcome::Unregistered) = state
+                .fcm
+                .send_grade_notification_detailed(
+                    token,
+                    &class_code,
+                    &subjects,
+                    &bimesters,
+                    &personal_highlights,
+                )
+                .await
+            {
+                let _ = state
+                    .accounts()
+                    .update_fcm_token(student.id, None, now)
+                    .await;
+            }
+        }
+    }
+}
+
+fn extract_student_grade_highlights(
+    boletim: &AllYearsResponse,
+    events: &[NewGradePostingEvent],
+) -> Vec<StudentGradeHighlight> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for ev in events {
+        let Ok(bimester) = u8::try_from(ev.bimester) else {
+            continue;
+        };
+        let key = (ev.subject_name.to_lowercase(), bimester);
+        if !seen.insert(key) {
+            continue;
+        }
+
+        // Match latest year containing this subject (or exact event year if available).
+        let mut matched_year: Option<i32> = None;
+        let mut personal_grade: Option<f64> = None;
+        let mut class_average: Option<f64> = None;
+        let mut previous_grade: Option<f64> = None;
+        let mut recovery = false;
+
+        for year_info in boletim.data.iter().rev() {
+            if let Some(subj) = year_info
+                .grades
+                .iter()
+                .find(|s| s.subject_name.eq_ignore_ascii_case(&ev.subject_name))
+                && let Some(bi) = subj.bimesters.iter().find(|b| b.bimester == bimester)
+            {
+                matched_year = Some(i32::from(year_info.year));
+                personal_grade = bi.personal.grade;
+                class_average = bi.class.average_grade;
+                recovery = bi.personal.recovery;
+                previous_grade = subj
+                    .bimesters
+                    .iter()
+                    .filter(|b| b.bimester < bimester)
+                    .rev()
+                    .find_map(|b| b.personal.grade);
+                break;
+            }
+        }
+
+        out.push(StudentGradeHighlight {
+            subject: ev.subject_name.clone(),
+            bimester,
+            year: matched_year.unwrap_or(ev.school_year),
+            personal_grade,
+            class_average,
+            previous_grade,
+            recovery,
+        });
+    }
+
+    out
 }
 
 pub fn spawn_sentinel_worker(

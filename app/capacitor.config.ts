@@ -15,6 +15,8 @@ const config: CapacitorConfig = {
         androidScheme: 'https',
         cleartext: false,
       },
+  // Test builds against a local dev server can be inspected with chrome://inspect.
+  ...(devServerUrl ? { android: { webContentsDebuggingEnabled: true } } : {}),
   plugins: {
     // Back is owned by MainActivity's predictive back callback + the web back stack.
     // Capacitor's always-enabled handler would swallow every back gesture and block

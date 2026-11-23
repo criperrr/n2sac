@@ -28,8 +28,10 @@ import {
   detectCoursePresetFromClassCode,
   EDITORIAL_PRESET_ID,
   EDITORIAL_SEED_HEX,
+  type AvatarShapeVariant,
   type IconShapeVariant,
   type ThemeMode,
+  resolveAvatarRadius,
 } from '../theme/materialYou';
 import { useM3Theme } from '../theme/ThemeContext';
 import {
@@ -632,9 +634,54 @@ export const AdaptiveStudioScreen: React.FC<{
           </div>
         </ExpressiveSegmentedCard>
 
+        {/* Profile Photo Shape Selector (available in all design systems; defaults to circle) */}
+        <ExpressiveSegmentedCard index={1} total={isMaterialYou ? 3 : 2} style={{ padding: '18px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+            <span
+              aria-hidden="true"
+              style={{
+                width: 44,
+                height: 44,
+                borderRadius: resolveAvatarRadius(settings.avatarShape, 44),
+                backgroundColor: tokens.primaryContainer,
+                color: tokens.onPrimaryContainer,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontWeight: 800,
+                fontSize: '0.92rem',
+                flexShrink: 0,
+                transition: 'border-radius 220ms cubic-bezier(0.2, 0, 0, 1)',
+              }}
+            >
+              NS
+            </span>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '1rem' }}>
+                Formato das Fotos de Perfil
+              </div>
+              <div style={{ fontSize: '0.8rem', color: tokens.onSurfaceVariant }}>
+                Escolha o formato dos avatares nos chats, ranking e canal da turma.
+              </div>
+            </div>
+          </div>
+
+          <EnhancedConnectedButtonGroup<AvatarShapeVariant>
+            wrap={true}
+            value={settings.avatarShape}
+            onChange={(avatarShape) => updateSettings({ avatarShape })}
+            options={[
+              { value: 'circle', label: 'Redondo' },
+              { value: 'squircle', label: 'Squircle' },
+              { value: 'rounded', label: 'Arredondado' },
+              { value: 'square', label: 'Quadrado' },
+            ]}
+          />
+        </ExpressiveSegmentedCard>
+
         {/* Icon Shape Selector (Only applicable in Material You Redesign mode) */}
         {isMaterialYou && (
-          <ExpressiveSegmentedCard index={1} total={2} style={{ padding: '18px 20px' }}>
+          <ExpressiveSegmentedCard index={2} total={3} style={{ padding: '18px 20px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
               <IconShapeContainer size={44} active>
                 <Shapes size={19} />

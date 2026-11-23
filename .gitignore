@@ -22,3 +22,6 @@ app/android/capacitor-cordova-android-plugins/build/
 CLAUDE.md
 AGENTS.md
 GEMINI.md
+
+# Local test environment runtime files
+scripts/dev-local/.run/

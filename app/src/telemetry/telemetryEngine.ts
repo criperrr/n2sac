@@ -331,15 +331,33 @@ async function sendTelemetryPayload(
   }
 }
 
+export interface LastUiErrorSummary {
+  name: string;
+  message: string;
+  at: string;
+}
+
+let lastUiError: LastUiErrorSummary | null = null;
+
+export function getLastUiError(): LastUiErrorSummary | null {
+  return lastUiError;
+}
+
 export function reportUiCrash(error: Error | unknown, componentStack?: string): void {
   const errObj = error instanceof Error ? error : new Error(String(error));
+  const at = new Date().toISOString();
+  lastUiError = {
+    name: (errObj.name || 'Error').slice(0, 60),
+    message: (errObj.message || 'Unknown UI crash').slice(0, 240),
+    at,
+  };
   void sendTelemetryPayload('crash', {
     name: errObj.name || 'Error',
     message: errObj.message || 'Unknown UI crash',
     stack: (errObj.stack || '').slice(0, 4000),
     component_stack: (componentStack || '').slice(0, 2000),
     route: typeof window !== 'undefined' ? window.location.pathname : '/',
-    timestamp: new Date().toISOString(),
+    timestamp: at,
   });
 }
 

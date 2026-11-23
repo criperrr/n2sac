@@ -10,6 +10,7 @@ import {
   normalizeHexColor,
   probeSystemDynamicColor,
   type AndroidDynamicColorPayload,
+  type AvatarShapeVariant,
   type DesignSystemMode,
   type IconShapeVariant,
   type M3ColorTokens,
@@ -29,6 +30,7 @@ export interface AdaptiveThemeSettings {
   paletteStyle: PaletteStyle;
   contrastLevel: number;
   iconShape: IconShapeVariant;
+  avatarShape: AvatarShapeVariant;
   thresholdIndex: number;
   customThresholdLux: number | null;
   simulatedSensorLux: number;
@@ -49,6 +51,7 @@ export const DEFAULT_THEME_SETTINGS: AdaptiveThemeSettings = {
   paletteStyle: 'editorial',
   contrastLevel: 0,
   iconShape: 'cookie6',
+  avatarShape: 'circle',
   thresholdIndex: 3,
   customThresholdLux: null,
   simulatedSensorLux: 35,

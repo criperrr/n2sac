@@ -1,7 +1,7 @@
 {
   "name": "nsac-aperture-app",
   "private": true,
-  "version": "1.3.2",
+  "version": "1.5.0",
   "type": "module",
   "description": "NSAC Online (CTI/UNESP Bauru) Material 3 Expressive Cross-Platform Application inspired by XDanfr/Aperture and xLexip/Adaptive-Theme",
   "scripts": {

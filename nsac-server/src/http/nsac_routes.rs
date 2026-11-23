@@ -186,6 +186,11 @@ async fn fetch_and_persist_boletim(
             .await?;
     }
 
+    // Capture the pre-upsert snapshot BEFORE overwriting DB grades so that if this manual refresh
+    // discovers a class-wide M.T. hash change ahead of Sentinel's schedule, we preserve the exact
+    // subject diff for Discord broadcast and classmate FCM push fan-out.
+    let prev_boletim = state.boletim().get_boletim(account_id).await.ok().flatten();
+
     state
         .boletim()
         .upsert_boletim(account_id, &live_boletim)
@@ -196,6 +201,37 @@ async fn fetch_and_persist_boletim(
         .get_boletim(account_id)
         .await?
         .unwrap_or(live_boletim);
+
+    if let Some(code) = canonical
+        .current_class_code()
+        .and_then(normalize_class_code)
+    {
+        let fresh_hash = nsac_core::sentinel::compute_class_grade_hash(&canonical);
+        if let Ok(Some(mut st)) = state.sentinel().get_class_state(&code).await
+            && st.last_class_hash.as_deref() != Some(fresh_hash.as_str())
+        {
+            if prev_boletim.is_some() {
+                let state_bg = state.clone();
+                let canonical_bg = canonical.clone();
+                tokio::spawn(async move {
+                    crate::sentinel::handle_manual_refresh_class_change(
+                        state_bg,
+                        code,
+                        account_id,
+                        prev_boletim,
+                        canonical_bg,
+                        fresh_hash,
+                    )
+                    .await;
+                });
+            } else {
+                st.next_check_at = now;
+                st.updated_at = now;
+                let _ = state.sentinel().upsert_class_state(&st).await;
+            }
+        }
+    }
+
     let etag = compute_strong_etag(&canonical)?;
     let cached = CachedBoletim {
         data: Arc::new(canonical),

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Crown, UserRound } from 'lucide-react';
 import { loadProfileImage } from '../../api/nsacClient';
+import { resolveAvatarRadius } from '../../theme/materialYou';
 import { useM3Theme } from '../../theme/ThemeContext';
 import { useProfileViewer, type ProfilePreview } from './ProfileViewer';
 
@@ -57,7 +58,7 @@ export const ProfileAvatar: React.FC<{
   /** Opens this profile on tap (only when `profile.canOpen`). */
   profile?: ProfilePreview & { canOpen: boolean };
 }> = ({ name, image, size = 44, rank = null, highlight = false, profile }) => {
-  const { tokens, isMaterialYou } = useM3Theme();
+  const { tokens, settings } = useM3Theme();
   const { openProfile } = useProfileViewer();
   const url = useProfileImage(image);
   // Keyed by URL: an already-decoded image can fire onLoad before any effect would reset a flag.
@@ -65,7 +66,7 @@ export const ProfileAvatar: React.FC<{
   const loaded = Boolean(url) && loadedUrl === url;
 
   const initials = initialsOf(name);
-  const radius = isMaterialYou ? '50%' : `${Math.round(size * 0.28)}px`;
+  const radius = resolveAvatarRadius(settings.avatarShape, size);
   const isFirst = rank === 1;
   const badgeSize = Math.max(18, Math.round(size * 0.44));
   const clickable = Boolean(profile?.canOpen);

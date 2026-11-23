@@ -1,5 +1,20 @@
 import { ProfileViewerProvider } from './components/profile/ProfileViewer';
-import { initializePushNotifications } from './notifications/pushService';
+import { PushedPage } from './components/expressive/PushedPage';
+import { GradeNotificationModal } from './components/GradeNotificationModal';
+import { FeedbackSettingsSection } from './components/settings/FeedbackSettings';
+import { NotificationSettingsSection } from './components/settings/NotificationSettings';
+import {
+  consumeNativeAccumulatedGrades,
+  consumePendingAppPushOpen,
+  initializePushNotifications,
+  type AppPushEventDetail,
+} from './notifications/pushService';
+import {
+  detectNewGradesAndUpdateSeen,
+  markHighlightsAsSeen,
+  mergeGradeHighlights,
+  seedSeenGradesIfMissing,
+} from './utils/seenGrades';
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
   checkServerHealth,
@@ -37,27 +52,31 @@ import { useBackLayer } from './navigation/backStack';
 import { useTabSwipeGesture } from './navigation/useTabSwipeGesture';
 import { canRunScreenTransition, runScreenTransition, type ScreenTransition } from './theme/viewTransition';
 
-const BoletimScreen = lazy(() =>
-  import('./screens/BoletimScreen').then((m) => ({ default: m.BoletimScreen }))
-);
-const RankingScreen = lazy(() =>
-  import('./screens/RankingScreen').then((m) => ({ default: m.RankingScreen }))
-);
-const FrequenciaScreen = lazy(() =>
-  import('./screens/FrequenciaScreen').then((m) => ({ default: m.FrequenciaScreen }))
-);
-const SentinelaScreen = lazy(() =>
-  import('./screens/SentinelaScreen').then((m) => ({ default: m.SentinelaScreen }))
-);
-const ProfileScreen = lazy(() =>
-  import('./screens/ProfileScreen').then((m) => ({ default: m.ProfileScreen }))
-);
-const AdaptiveStudioScreen = lazy(() =>
-  import('./screens/AdaptiveStudioScreen').then((m) => ({ default: m.AdaptiveStudioScreen }))
-);
-const LoginScreen = lazy(() =>
-  import('./screens/LoginScreen').then((m) => ({ default: m.LoginScreen }))
-);
+const loadBoletimScreen = () =>
+  import('./screens/BoletimScreen').then((m) => ({ default: m.BoletimScreen }));
+const loadTurmaScreen = () =>
+  import('./screens/TurmaScreen').then((m) => ({ default: m.TurmaScreen }));
+const loadRankingScreen = () =>
+  import('./screens/RankingScreen').then((m) => ({ default: m.RankingScreen }));
+const loadFrequenciaScreen = () =>
+  import('./screens/FrequenciaScreen').then((m) => ({ default: m.FrequenciaScreen }));
+const loadSentinelaScreen = () =>
+  import('./screens/SentinelaScreen').then((m) => ({ default: m.SentinelaScreen }));
+const loadProfileScreen = () =>
+  import('./screens/ProfileScreen').then((m) => ({ default: m.ProfileScreen }));
+const loadAdaptiveStudioScreen = () =>
+  import('./screens/AdaptiveStudioScreen').then((m) => ({ default: m.AdaptiveStudioScreen }));
+const loadLoginScreen = () =>
+  import('./screens/LoginScreen').then((m) => ({ default: m.LoginScreen }));
+
+const BoletimScreen = lazy(loadBoletimScreen);
+const TurmaScreen = lazy(loadTurmaScreen);
+const RankingScreen = lazy(loadRankingScreen);
+const FrequenciaScreen = lazy(loadFrequenciaScreen);
+const SentinelaScreen = lazy(loadSentinelaScreen);
+const ProfileScreen = lazy(loadProfileScreen);
+const AdaptiveStudioScreen = lazy(loadAdaptiveStudioScreen);
+const LoginScreen = lazy(loadLoginScreen);
 
 const MANUAL_REFRESH_COOLDOWN_SECS = 60;
 
@@ -65,18 +84,46 @@ export const App: React.FC = () => {
   const { applyCourseClassCode } = useM3Theme();
   const [session, setSession] = useState<LoginResponse | null>(() => loadStoredSession());
   const [activeTab, setActiveTab] = useState<AppTabId>('boletim');
+  // Configurações & Alertas/Sentinela are pages pushed above the current tab, so the active
+  // tab (Turma, Ranking, Frequência, Perfil, Boletim) stays mounted underneath and pressing
+  // Back ALWAYS returns straight to where the user was.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sentinelaOpen, setSentinelaOpen] = useState(false);
+  const settingsCloseRef = useRef<(() => void) | null>(null);
+  const sentinelaCloseRef = useRef<(() => void) | null>(null);
   const tabSurfaceRef = useRef<HTMLDivElement>(null);
+  const [gradeNotifDetail, setGradeNotifDetail] = useState<AppPushEventDetail | null>(null);
+  const [highlightAnnouncementId, setHighlightAnnouncementId] = useState<number | null>(null);
   /**
    * How the current page arrived, so it animates exactly once:
    * - `vt`: a View Transition already animated it (no CSS entry animation, no card stagger);
    * - `css`: fallback fade-through entry animation (no View Transitions / first load);
    * - `none`: predictive back already previewed the swap.
    */
-  const [pageEntry, setPageEntry] = useState<'vt' | 'css' | 'swipe-next' | 'swipe-prev' | 'none'>('css');
-  // Top-level destinations: back returns to the start destination (Boletim), previewing the page.
-  // Gesture: the outgoing page already previewed out, so animate Boletim in cleanly via CSS.
+  const [pageEntry, setPageEntry] = useState<
+    'vt' | 'css' | 'axis-x-forward' | 'axis-x-backward' | 'swipe-next' | 'swipe-prev' | 'none'
+  >('css');
+
+  // Preload lazy screen chunks during idle time after first paint so tab transitions
+  // never stall on network chunk fetches or capture a Suspense fallback snapshot.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void Promise.allSettled([
+        loadBoletimScreen(),
+        loadTurmaScreen(),
+        loadRankingScreen(),
+        loadFrequenciaScreen(),
+        loadSentinelaScreen(),
+        loadProfileScreen(),
+        loadAdaptiveStudioScreen(),
+      ]);
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  // Top-level destinations: back returns to Boletim ONLY when no pushed page or modal is open.
   useBackLayer(
-    activeTab !== 'boletim',
+    activeTab !== 'boletim' && !settingsOpen && !sentinelaOpen && !gradeNotifDetail,
     (source) => {
       if (source === 'gesture') {
         setPageEntry('css');
@@ -88,24 +135,43 @@ export const App: React.FC = () => {
     { kind: 'tab', surfaceRef: tabSurfaceRef }
   );
 
-  // M3 transition patterns: top-level destinations fade through on tap, slide horizontally on
-  // swipe, and Settings (opened from the top bar gear) moves along the shared X axis.
+  // M3 transition patterns: live-DOM CSS choreography (no View Transition bitmap snapshot
+  // stretching/squashing when old and new screens have different heights or async data).
   const navigateTab = useCallback(
     (tab: AppTabId, overrideKind?: ScreenTransition) => {
       if (tab === activeTab) return;
       const kind: ScreenTransition =
         overrideKind ??
         (tab === 'settings' ? 'axis-x-forward' : activeTab === 'settings' ? 'axis-x-backward' : 'fade-through');
-      const entry = canRunScreenTransition() ? 'vt' : 'css';
-      runScreenTransition(kind, () => {
-        setPageEntry(entry);
-        setActiveTab(tab);
-      });
+      if (kind === 'axis-x-forward' || kind === 'axis-x-backward') {
+        setPageEntry(kind);
+      } else if (kind === 'swipe-next' || kind === 'swipe-prev') {
+        setPageEntry(kind);
+      } else {
+        setPageEntry('css');
+      }
+      setActiveTab(tab);
     },
     [activeTab]
   );
 
-  const selectTab = useCallback((tab: AppTabId) => navigateTab(tab), [navigateTab]);
+  const selectTab = useCallback(
+    (tab: AppTabId) => {
+      if (tab === 'settings') {
+        setSettingsOpen(true);
+        return;
+      }
+      if (tab === 'sentinela') {
+        if (settingsOpen) settingsCloseRef.current?.();
+        setSentinelaOpen(true);
+        return;
+      }
+      if (settingsOpen) settingsCloseRef.current?.();
+      if (sentinelaOpen) sentinelaCloseRef.current?.();
+      navigateTab(tab);
+    },
+    [navigateTab, settingsOpen, sentinelaOpen]
+  );
 
   const handleSwipeTab = useCallback(
     (tab: AppTabId, direction: 'next' | 'prev') => {
@@ -184,12 +250,22 @@ export const App: React.FC = () => {
   });
 
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [tabChildRefreshing, setTabChildRefreshing] = useState(false);
+  const [rankingRefreshSignal, setRankingRefreshSignal] = useState(0);
+  const [turmaRefreshSignal, setTurmaRefreshSignal] = useState(0);
+  const [pendingRoomChannel, setPendingRoomChannel] = useState<'chat' | 'off_topic' | null>(null);
+  const [profileRefreshSignal, setProfileRefreshSignal] = useState(0);
   const [refreshCooldownUntil, setRefreshCooldownUntil] = useState<number | null>(null);
   const [isPageVisible, setIsPageVisible] = useState(
     typeof document !== 'undefined' ? document.visibilityState === 'visible' : true
   );
 
   const syncInFlightRef = useRef(false);
+
+  // Reset child tab busy indicator whenever switching tabs so a previous tab never leaves it stuck
+  useEffect(() => {
+    setTabChildRefreshing(false);
+  }, [activeTab]);
 
   // Check backend health
   useEffect(() => {
@@ -259,6 +335,39 @@ export const App: React.FC = () => {
         remainingPollMsRef.current = pollDelayMs;
         setNextPollAt(Date.now() + pollDelayMs);
 
+        // Detect newly posted grades since the student's last seen boletim snapshot
+        // and surface the exact same summary/detail popup ("enquanto você estava fora").
+        const detectedWhileAway = detectNewGradesAndUpdateSeen(session.account_id, boletimRes.data);
+        if (detectedWhileAway.length > 0) {
+          window.NsacAndroidPush?.clearAccumulatedGradeNotifications?.();
+          const detectedClass = profileRes?.class_code ?? session.class_code ?? undefined;
+          setGradeNotifDetail((prev) => {
+            if (prev) {
+              const merged = mergeGradeHighlights(prev.highlights ?? [], detectedWhileAway);
+              return { ...prev, highlights: merged };
+            }
+            const first = detectedWhileAway[0]!;
+            return {
+              kind: 'grade_update',
+              source: 'while_away',
+              title:
+                detectedWhileAway.length >= 2
+                  ? 'Algumas notas novas saíram enquanto você estava fora'
+                  : 'Uma nota nova saiu enquanto você estava fora',
+              body: '',
+              classCode: detectedClass,
+              subjects: detectedWhileAway.map((h) => h.subject),
+              bimesters: Array.from(new Set(detectedWhileAway.map((h) => h.bimester))),
+              primarySubject: first.subject,
+              primaryBimester: first.bimester,
+              primaryYear: first.year,
+              primaryGrade: first.personal_grade,
+              primaryClassAvg: first.class_average,
+              highlights: detectedWhileAway,
+            };
+          });
+        }
+
         if (profileRes) {
           setAccountProfile(profileRes);
           if (profileRes.class_code) {
@@ -297,12 +406,69 @@ export const App: React.FC = () => {
     [session, applyCourseClassCode, handleLogout]
   );
 
+  // Route taps on grade, announcement and classroom-chat push notifications to the right screen/modal.
+  useEffect(() => {
+    if (!session) return;
+    const handleAppPushOpen = (detail: AppPushEventDetail) => {
+      if (detail.kind === 'grade_update') {
+        if (detail.highlights?.length) {
+          markHighlightsAsSeen(session.account_id, detail.highlights);
+        }
+        setGradeNotifDetail(detail);
+        void synchronizeAllData(false);
+      } else if (detail.kind === 'class_announcement') {
+        selectTab('turma');
+        setTurmaRefreshSignal((n) => n + 1);
+        if (detail.announcementId) {
+          setHighlightAnnouncementId(detail.announcementId);
+        }
+      } else if (detail.kind === 'room_chat' || detail.kind === 'room_offtopic') {
+        selectTab('turma');
+        setPendingRoomChannel(detail.channelKind ?? (detail.kind === 'room_offtopic' ? 'off_topic' : 'chat'));
+      }
+    };
+    const onAppPush = (ev: Event) => {
+      const detail = (ev as CustomEvent<AppPushEventDetail>).detail;
+      if (!detail) return;
+      if (detail.kind === 'grade_update') {
+        void synchronizeAllData(false);
+      } else if (detail.kind === 'class_announcement' || detail.kind === 'room_chat' || detail.kind === 'room_offtopic') {
+        setTurmaRefreshSignal((n) => n + 1);
+      }
+    };
+    const onAppPushOpen = (ev: Event) => {
+      const detail = (ev as CustomEvent<AppPushEventDetail>).detail;
+      if (detail) handleAppPushOpen(detail);
+    };
+    window.addEventListener('n2sac:app-push', onAppPush);
+    window.addEventListener('n2sac:app-push-open', onAppPushOpen);
+
+    // Drain any cold-start notification tap captured before this effect registered.
+    const pending = consumePendingAppPushOpen();
+    if (pending) {
+      handleAppPushOpen(pending);
+    } else {
+      // User opened the app directly: if unread grade notifications accumulated while away,
+      // show them immediately in the exact same "enquanto você estava fora" popup!
+      const unreadWhileAway = consumeNativeAccumulatedGrades();
+      if (unreadWhileAway) {
+        handleAppPushOpen(unreadWhileAway);
+      }
+    }
+
+    return () => {
+      window.removeEventListener('n2sac:app-push', onAppPush);
+      window.removeEventListener('n2sac:app-push-open', onAppPushOpen);
+    };
+  }, [session, selectTab, synchronizeAllData]);
+
   // Initial Stale-While-Revalidate check on login or startup
   useEffect(() => {
     if (!session) return;
     // Hydrate from local cache in 0ms first
     const cachedBoletim = loadCachedResource<AllYearsResponse>('boletim', session.account_id);
     if (cachedBoletim) {
+      seedSeenGradesIfMissing(session.account_id, cachedBoletim.data);
       setBoletim(cachedBoletim.data);
       setBoletimEtag(cachedBoletim.etag);
       setLastStatus(cachedBoletim.lastStatus);
@@ -333,6 +499,20 @@ export const App: React.FC = () => {
     }
 
     if (!wasVisible) {
+      // Returning from background: surface any unread accumulated grades immediately
+      // and check ETag/304 for newly posted grades while the user was away.
+      const unreadWhileAway = consumeNativeAccumulatedGrades();
+      if (unreadWhileAway) {
+        if (unreadWhileAway.highlights?.length) {
+          markHighlightsAsSeen(session.account_id, unreadWhileAway.highlights);
+        }
+        setGradeNotifDetail((prev) =>
+          prev
+            ? { ...prev, highlights: mergeGradeHighlights(prev.highlights ?? [], unreadWhileAway.highlights ?? []) }
+            : unreadWhileAway
+        );
+      }
+      void synchronizeAllData(false);
       const resumedTarget = Date.now() + Math.max(1000, remainingPollMsRef.current);
       setNextPollAt(resumedTarget);
       return;
@@ -349,15 +529,102 @@ export const App: React.FC = () => {
     return () => window.clearTimeout(timer);
   }, [session, isPageVisible, nextPollAt, nextPollHintSecs, synchronizeAllData]);
 
+  const refreshActiveTabData = useCallback(
+    async (forceBackendRefresh = false) => {
+      if (!session) return;
+
+      // 1. Turma tab: reload class announcements, chat previews & representatives
+      if (activeTab === 'turma') {
+        setTurmaRefreshSignal((n) => n + 1);
+        return;
+      }
+
+      // 2. Ranking tab: reload the leaderboard, active peer comparison (if open), and ranking preferences
+      if (activeTab === 'ranking') {
+        setRankingRefreshSignal((n) => n + 1);
+        setIsRefreshing(true);
+        try {
+          const prefs = await fetchRankingPreferences(session.token).catch(() => null);
+          if (prefs) setRankingPrefs(prefs);
+        } finally {
+          setIsRefreshing(false);
+        }
+        return;
+      }
+
+      // 2. Fichas & Frequência tab: reload Fichas, Atrasos, Saídas, and Portal NSAC (HomeInfo)
+      if (activeTab === 'frequencia') {
+        if (syncInFlightRef.current) return;
+        syncInFlightRef.current = true;
+        setIsRefreshing(true);
+        try {
+          await Promise.allSettled([
+            fetchFichaList(session.token, session.account_id, forceBackendRefresh).then((r) =>
+              setFichas(r.data)
+            ),
+            fetchAtrasos(session.token, session.account_id, forceBackendRefresh).then((r) =>
+              setAtrasos(r.data)
+            ),
+            fetchSaidas(session.token, session.account_id, forceBackendRefresh).then((r) =>
+              setSaidas(r.data)
+            ),
+            fetchHomeInfo(session.token, session.account_id, forceBackendRefresh).then((r) =>
+              setHomeInfo(r.data)
+            ),
+          ]);
+        } finally {
+          setIsRefreshing(false);
+          syncInFlightRef.current = false;
+        }
+        return;
+      }
+
+      // 3. Perfil tab: reload user profile, social hub (friends/requests/search), privacy prefs, and account info
+      if (activeTab === 'profile') {
+        setProfileRefreshSignal((n) => n + 1);
+        window.dispatchEvent(new CustomEvent('n2sac:social-refresh'));
+        setIsRefreshing(true);
+        try {
+          const [profileRes, prefsRes] = await Promise.all([
+            fetchAccountProfile(session.token).catch(() => null),
+            fetchRankingPreferences(session.token).catch(() => null),
+          ]);
+          if (profileRes) {
+            setAccountProfile(profileRes);
+            if (profileRes.class_code) {
+              applyCourseClassCode(profileRes.class_code);
+            }
+          }
+          if (prefsRes) {
+            setRankingPrefs(prefsRes);
+          }
+        } finally {
+          setIsRefreshing(false);
+        }
+        return;
+      }
+
+      // 4. Alertas & Conta (sentinela), Boletim, Configurações (settings), or any fallback tab:
+      // reload grades/boletim + account status (same as default synchronizeAllData).
+      await synchronizeAllData(forceBackendRefresh);
+    },
+    [session, activeTab, applyCourseClassCode, synchronizeAllData]
+  );
+
   const handleManualRefresh = useCallback(
     (forceBackendRefresh = false) => {
       if (refreshCooldownUntil !== null && forceBackendRefresh) return;
       if (forceBackendRefresh) {
         setRefreshCooldownUntil(Date.now() + MANUAL_REFRESH_COOLDOWN_SECS * 1000);
       }
-      void synchronizeAllData(forceBackendRefresh);
+      if (forceBackendRefresh) {
+        // Sentinela "Forçar sincronização no NSAC" explicitly forces a backend NSAC sync
+        void synchronizeAllData(true);
+        return;
+      }
+      void refreshActiveTabData(false);
     },
-    [refreshCooldownUntil, synchronizeAllData]
+    [refreshCooldownUntil, synchronizeAllData, refreshActiveTabData]
   );
 
   if (!session) {
@@ -392,12 +659,12 @@ export const App: React.FC = () => {
   return (
     <ProfileViewerProvider token={session.token}>
       <ExpressiveNavigationShell
-        activeTab={activeTab}
+        activeTab={settingsOpen ? 'settings' : sentinelaOpen ? 'sentinela' : activeTab}
         onSelectTab={selectTab}
         classCode={effectiveClassCode}
         nsacEmail={session.nsac_email}
         refreshCooldownUntil={refreshCooldownUntil}
-        isRefreshing={isRefreshing}
+        isRefreshing={isRefreshing || tabChildRefreshing}
         lastHttpStatus={lastStatus}
         onManualRefresh={() => handleManualRefresh(false)}
         onLogout={handleLogout}
@@ -410,16 +677,31 @@ export const App: React.FC = () => {
               ? 'nsac-page-vt'
               : pageEntry === 'css'
                 ? 'm3-page-transition'
-                : pageEntry === 'swipe-next'
-                  ? 'm3-page-swipe-next'
-                  : pageEntry === 'swipe-prev'
-                    ? 'm3-page-swipe-prev'
-                    : undefined
+                : pageEntry === 'axis-x-forward'
+                  ? 'm3-page-axis-x-forward'
+                  : pageEntry === 'axis-x-backward'
+                    ? 'm3-page-axis-x-backward'
+                    : pageEntry === 'swipe-next'
+                      ? 'm3-page-swipe-next'
+                      : pageEntry === 'swipe-prev'
+                        ? 'm3-page-swipe-prev'
+                        : undefined
           }
         >
           <Suspense fallback={<MorphingLoadingState label="Carregando tela..." />}>
             {activeTab === 'boletim' && (
               <BoletimScreen boletim={boletim} loading={isRefreshing && !boletim} />
+            )}
+            {activeTab === 'turma' && (
+              <TurmaScreen
+                token={session.token}
+                refreshSignal={turmaRefreshSignal}
+                initialOpenChannel={pendingRoomChannel}
+                onConsumedInitialChannel={() => setPendingRoomChannel(null)}
+                highlightAnnouncementId={highlightAnnouncementId}
+                onConsumedHighlightAnnouncement={() => setHighlightAnnouncementId(null)}
+                onRefreshingChange={setTabChildRefreshing}
+              />
             )}
             {activeTab === 'ranking' && (
               <RankingScreen
@@ -428,6 +710,8 @@ export const App: React.FC = () => {
                 classCode={effectiveClassCode}
                 preferences={rankingPrefs}
                 onPreferencesUpdated={setRankingPrefs}
+                refreshSignal={rankingRefreshSignal}
+                onRefreshingChange={setTabChildRefreshing}
               />
             )}
             {activeTab === 'frequencia' && (
@@ -454,6 +738,7 @@ export const App: React.FC = () => {
                 refreshCooldownUntil={refreshCooldownUntil}
                 isRefreshing={isRefreshing}
                 onManualRefresh={handleManualRefresh}
+                onOpenSettings={() => selectTab('settings')}
               />
             )}
             {activeTab === 'profile' && (
@@ -463,11 +748,71 @@ export const App: React.FC = () => {
                 accountProfile={accountProfile}
                 detectedClassCode={effectiveClassCode}
                 onLogout={handleLogout}
+                refreshSignal={profileRefreshSignal}
+                onRefreshingChange={setTabChildRefreshing}
               />
             )}
-            {activeTab === 'settings' && <AdaptiveStudioScreen detectedClassCode={effectiveClassCode} />}
           </Suspense>
         </div>
+        {sentinelaOpen && (
+          <PushedPage
+            title="Alertas & Sentinela"
+            showTitle={false}
+            zIndex={60}
+            onClose={() => setSentinelaOpen(false)}
+            closeRef={sentinelaCloseRef}
+          >
+            <Suspense fallback={<MorphingLoadingState label="Carregando alertas..." />}>
+              <SentinelaScreen
+                token={session.token}
+                accountProfile={accountProfile}
+                onProfileUpdated={setAccountProfile}
+                etag={boletimEtag}
+                lastStatus={lastStatus}
+                cachedAt={cachedAt}
+                nextPollHintSecs={nextPollHintSecs}
+                nextPollAt={nextPollAt}
+                isPageVisible={isPageVisible}
+                refreshCooldownUntil={refreshCooldownUntil}
+                isRefreshing={isRefreshing}
+                onManualRefresh={handleManualRefresh}
+                onOpenSettings={() => setSettingsOpen(true)}
+              />
+            </Suspense>
+          </PushedPage>
+        )}
+        {settingsOpen && (
+          <PushedPage
+            title="Configurações"
+            showTitle={false}
+            zIndex={70}
+            onClose={() => setSettingsOpen(false)}
+            closeRef={settingsCloseRef}
+          >
+            <Suspense fallback={<MorphingLoadingState label="Carregando configurações..." />}>
+              <AdaptiveStudioScreen detectedClassCode={effectiveClassCode} />
+              <NotificationSettingsSection
+                token={session.token}
+                accountProfile={accountProfile}
+                onProfileUpdated={setAccountProfile}
+              />
+              <FeedbackSettingsSection
+                token={session.token}
+                accountProfile={accountProfile}
+                detectedClassCode={effectiveClassCode}
+              />
+            </Suspense>
+          </PushedPage>
+        )}
+        {gradeNotifDetail && (
+          <GradeNotificationModal
+            detail={gradeNotifDetail}
+            boletim={boletim}
+            refreshing={isRefreshing}
+            onOpenBoletim={() => selectTab('boletim')}
+            onClose={() => setGradeNotifDetail(null)}
+          />
+        )}
         <RankingConsentModal
           open={Boolean(rankingPrefs && !rankingPrefs.has_decided)}
           saving={savingRankingConsent}

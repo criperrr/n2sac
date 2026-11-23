@@ -13,12 +13,12 @@ use crate::auth::{DualAuth, Principal};
 use crate::error::ServerError;
 use crate::db::profiles::{self, ProfileImage};
 use crate::db::ranking::{avatar_path, format_student_label};
+use crate::db::moderation::{ModerationRepo, ReportKind, ReportOutcome, Restriction};
 use crate::db::social::{FollowEdgeStatus, RelationshipStatus};
+use crate::media::{ProfileMediaKind, sanitize_profile_image};
 use crate::http::envelope::{ApiSuccess, etag_matches_if_none_match, ok_json};
 use crate::state::AppState;
 
-const MAX_AVATAR_LEN: usize = 450_000;
-const MAX_BANNER_LEN: usize = 650_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserProfilePayload {
@@ -28,6 +28,9 @@ pub struct UserProfilePayload {
     pub bio: Option<String>,
     pub avatar_data_url: Option<String>,
     pub banner_data_url: Option<String>,
+    /// Active community-moderation restrictions on the viewer's own content.
+    #[serde(default)]
+    pub restrictions: Vec<Restriction>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +92,7 @@ pub async fn get_profile(
     .await?;
 
     let first_name = extract_first_name_from_email(&email);
+    let restrictions = state.moderation().restrictions(account_id).await?;
     let payload = match row {
         Some(r) => UserProfilePayload {
             account_id,
@@ -97,6 +101,7 @@ pub async fn get_profile(
             bio: r.bio,
             avatar_data_url: r.avatar_data_url,
             banner_data_url: r.banner_data_url,
+            restrictions,
         },
         None => UserProfilePayload {
             account_id,
@@ -105,6 +110,7 @@ pub async fn get_profile(
             bio: None,
             avatar_data_url: None,
             banner_data_url: None,
+            restrictions,
         },
     };
 
@@ -125,20 +131,17 @@ pub async fn put_profile(
         Principal::Service(_) => return Err(ServerError::unauthorized("User session required")),
     };
 
-    if let Some(ref avatar) = body.avatar_data_url
-        && avatar.len() > MAX_AVATAR_LEN
-    {
-        return Err(ServerError::invalid_params(
-            "Foto de perfil muito grande. Use uma imagem menor.",
-        ));
-    }
-    if let Some(ref banner) = body.banner_data_url
-        && banner.len() > MAX_BANNER_LEN
-    {
-        return Err(ServerError::invalid_params(
-            "Banner muito grande. Use uma imagem menor.",
-        ));
-    }
+    let stored = sqlx::query_as::<_, ProfileRow>(
+        "SELECT display_name, bio, avatar_data_url, banner_data_url FROM account_profiles WHERE account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (stored_name, stored_bio, stored_avatar, stored_banner) = match stored {
+        Some(r) => (r.display_name, r.bio, r.avatar_data_url, r.banner_data_url),
+        None => (None, None, None, None),
+    };
+    let moderation = state.moderation();
 
     let cleaned_name = body
         .display_name
@@ -148,6 +151,27 @@ pub async fn put_profile(
         .bio
         .map(|s| s.trim().chars().take(240).collect::<String>())
         .filter(|s| !s.is_empty());
+
+    // Restricted accounts may keep or clear, never set new content of that kind.
+    let sets_new_text = (cleaned_name.is_some() && cleaned_name != stored_name)
+        || (cleaned_bio.is_some() && cleaned_bio != stored_bio);
+    if sets_new_text
+        && let Some(r) = moderation.restriction(account_id, ReportKind::Text).await?
+    {
+        return Err(ModerationRepo::restricted_error(&r));
+    }
+    let sets_new_media = (body.avatar_data_url.is_some() && body.avatar_data_url != stored_avatar)
+        || (body.banner_data_url.is_some() && body.banner_data_url != stored_banner);
+    if sets_new_media
+        && let Some(r) = moderation.restriction(account_id, ReportKind::Media).await?
+    {
+        return Err(ModerationRepo::restricted_error(&r));
+    }
+
+    // Unchanged images are kept as stored (already sanitized; no generation loss). New ones are
+    // decoded and re-encoded off the async runtime.
+    let avatar = sanitize_if_new(body.avatar_data_url, stored_avatar, ProfileMediaKind::Avatar).await?;
+    let banner = sanitize_if_new(body.banner_data_url, stored_banner, ProfileMediaKind::Banner).await?;
 
     let row = sqlx::query_as::<_, ProfileRow>(
         r#"
@@ -167,8 +191,8 @@ pub async fn put_profile(
     .bind(account_id)
     .bind(cleaned_name)
     .bind(cleaned_bio)
-    .bind(body.avatar_data_url)
-    .bind(body.banner_data_url)
+    .bind(avatar)
+    .bind(banner)
     .fetch_one(&state.db)
     .await?;
 
@@ -186,9 +210,62 @@ pub async fn put_profile(
             bio: row.bio,
             avatar_data_url: row.avatar_data_url,
             banner_data_url: row.banner_data_url,
+            restrictions: state.moderation().restrictions(account_id).await?,
         },
         next_poll_hint_secs: None,
     }))
+}
+
+async fn sanitize_if_new(
+    incoming: Option<String>,
+    stored: Option<String>,
+    kind: ProfileMediaKind,
+) -> Result<Option<String>, ServerError> {
+    match incoming {
+        None => Ok(None),
+        Some(url) if Some(&url) == stored.as_ref() => Ok(Some(url)),
+        Some(url) => tokio::task::spawn_blocking(move || sanitize_profile_image(&url, kind))
+            .await
+            .map_err(|_| ServerError::internal("Image sanitize task failed"))?
+            .map(Some),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReportRequest {
+    pub kind: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReportResponse {
+    pub outcome: ReportOutcome,
+}
+
+/// POST /api/v1/profiles/{account_id}/report — `{ "kind": "media" | "text" }`.
+/// Anonymous: the reported person never learns who reported.
+pub async fn post_report(
+    State(state): State<AppState>,
+    DualAuth(principal): DualAuth,
+    Path(account_id): Path<i64>,
+    Json(body): Json<ReportRequest>,
+) -> Result<Response, ServerError> {
+    let viewer = user_account_id(&principal)?;
+    let kind = ReportKind::parse(&body.kind).ok_or_else(|| ServerError::invalid_params("Unknown report kind"))?;
+    if viewer != account_id {
+        // Only content the reporter can actually see can be reported.
+        let rel = state.social().relationship(viewer, account_id).await?;
+        if rel.blocked_by_me || rel.blocked_me {
+            return Err(hidden());
+        }
+        if !rel.is_friend {
+            let owner = profiles::visibility(&state.db, account_id).await?;
+            if !(owner.profile_visible() || owner.avatar_visible()) {
+                return Err(hidden());
+            }
+        }
+    }
+    let outcome = state.moderation().report(viewer, account_id, kind).await?;
+    Ok(ok_json(ReportResponse { outcome }))
 }
 
 fn user_account_id(principal: &Principal) -> Result<i64, ServerError> {

@@ -32,6 +32,7 @@ interface BackLayer {
   surfaceRef?: RefObject<HTMLElement | null>;
   scrimRef?: RefObject<HTMLElement | null>;
   hooks: MutableRefObject<BackGestureHooks>;
+  closing?: boolean;
 }
 
 /** Optional reactions to the preview itself (e.g. reveal what an overlay page covers). */
@@ -88,13 +89,35 @@ interface GestureState {
 }
 
 let gesture: GestureState | null = null;
+/** Prevents a double/cascading back event right after closing a menu/page from popping the underlying tab. */
+let suppressTabBackUntil = 0;
 
-/** A mandatory choice always wins, regardless of registration order. */
+const LAYER_PRIORITY: Record<BackLayerKind, number> = {
+  tab: 0,
+  page: 1,
+  modal: 2,
+  inline: 3,
+  blocking: 4,
+};
+
+/**
+ * Picks the highest-priority active layer (LIFO within the same tier):
+ * blocking > inline > modal > page > tab.
+ * Guarantees an open menu/page/modal ALWAYS intercepts Back before any underlying tab layer.
+ */
 const topLayer = (): BackLayer | undefined => {
+  let best: BackLayer | undefined;
+  let bestPriority = -1;
   for (let i = layers.length - 1; i >= 0; i--) {
-    if (layers[i]!.kind === 'blocking') return layers[i];
+    const candidate = layers[i]!;
+    if (candidate.closing) continue;
+    const prio = LAYER_PRIORITY[candidate.kind];
+    if (prio > bestPriority) {
+      best = candidate;
+      bestPriority = prio;
+    }
   }
-  return layers[layers.length - 1];
+  return best;
 };
 
 function previewTransform(eased: number, dir: number, yShift: number, minScale = 0.9): string {
@@ -168,6 +191,10 @@ function commitWithAnimation(state: GestureState): void {
   const { layer, dir, yShift } = state;
   const surface = layer.surfaceRef?.current;
   const scrim = layer.scrimRef?.current;
+  layer.closing = true;
+  if (layer.kind !== 'tab') {
+    suppressTabBackUntil = performance.now() + 340;
+  }
   if (!surface || layer.kind === 'inline') {
     layer.onBack.current('gesture');
     return;
@@ -242,9 +269,17 @@ function onNativeBack(event: Event): void {
         if (active) settle(active.layer);
         return;
       }
+      if (layer.kind === 'tab' && performance.now() < suppressTabBackUntil) {
+        if (active) settle(active.layer);
+        return;
+      }
       // No preview happened (3-button navigation, Android < 14): run the layer's normal close.
       if (!active || active.layer !== layer || active.eased <= 0) {
         if (active) clearStyles(active.layer.surfaceRef?.current);
+        layer.closing = true;
+        if (layer.kind !== 'tab') {
+          suppressTabBackUntil = performance.now() + 340;
+        }
         layer.onBack.current('button');
         return;
       }

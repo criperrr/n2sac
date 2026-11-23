@@ -5,10 +5,13 @@
 pub mod auth;
 pub mod config;
 pub mod db;
+pub mod discord;
 pub mod error;
 pub mod fcm;
 pub mod http;
+pub mod media;
 pub mod ports;
+pub mod realtime;
 pub mod sentinel;
 pub mod state;
 

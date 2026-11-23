@@ -13,6 +13,7 @@ import { MorphingShapeIndicator } from '../components/expressive/ShapeMorph';
 import { useMinimumBusy } from '../theme/motion';
 import { PrivacySettingsCard } from '../components/PrivacySettingsCard';
 import { SocialHubCard } from '../components/social/SocialHubCard';
+import { compressImageToDataUrl } from '../utils/imageCompress';
 
 export function extractFirstNameFromEmail(email?: string | null): string {
   if (!email) return 'Aluno';
@@ -22,46 +23,23 @@ export function extractFirstNameFromEmail(email?: string | null): string {
   return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
 }
 
-function compressImageToDataUrl(
-  file: File,
-  maxWidth: number,
-  maxHeight: number,
-  quality = 0.82
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Falha ao ler imagem'));
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = () => reject(new Error('Imagem inválida'));
-      img.onload = () => {
-        const ratio = Math.min(1, maxWidth / img.width, maxHeight / img.height);
-        const w = Math.max(1, Math.round(img.width * ratio));
-        const h = Math.max(1, Math.round(img.height * ratio));
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          reject(new Error('Canvas indisponível'));
-          return;
-        }
-        ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', quality));
-      };
-      img.src = String(reader.result);
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
 export const ProfileScreen: React.FC<{
   token: string;
   accountId: number;
   accountProfile: AccountProfileResponse | null;
   detectedClassCode: string | null;
   onLogout: () => void;
-}> = ({ token, accountId, accountProfile, detectedClassCode, onLogout }) => {
+  refreshSignal?: number;
+  onRefreshingChange?: (busy: boolean) => void;
+}> = ({
+  token,
+  accountId,
+  accountProfile,
+  detectedClassCode,
+  onLogout,
+  refreshSignal = 0,
+  onRefreshingChange,
+}) => {
   const { tokens, isMaterialYou } = useM3Theme();
   const initialCached = loadCachedUserProfile(accountId);
   const [profile, setProfile] = useState<UserProfileData | null>(initialCached);
@@ -72,20 +50,30 @@ export const ProfileScreen: React.FC<{
   const [saving, setSaving] = useState(false);
   const showSaving = useMinimumBusy(saving);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const onRefreshingChangeRef = useRef(onRefreshingChange);
+  onRefreshingChangeRef.current = onRefreshingChange;
 
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const bannerInputRef = useRef<HTMLInputElement>(null);
 
   const fallbackFirstName = extractFirstNameFromEmail(accountProfile?.nsac_email);
+  const mediaRestriction = profile?.restrictions?.find((r) => r.kind === 'media') ?? null;
+  const textRestriction = profile?.restrictions?.find((r) => r.kind === 'text') ?? null;
+  const restrictionText = (r: { until: string | null; permanent: boolean }, what: string) =>
+    r.permanent || !r.until
+      ? `Por denúncias repetidas da comunidade, você não pode mais alterar ${what}.`
+      : `Por denúncias da comunidade, ${what} foi removido e só pode ser alterado depois de ${new Date(r.until).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}.`;
 
   useEffect(() => {
     let cancelled = false;
+    onRefreshingChangeRef.current?.(true);
     void (async () => {
       try {
         const data = await fetchUserProfile(token);
         if (cancelled) return;
         setProfile((prev) =>
           prev &&
+          JSON.stringify(prev.restrictions ?? []) === JSON.stringify(data.restrictions ?? []) &&
           prev.display_name === data.display_name &&
           prev.bio === data.bio &&
           prev.avatar_data_url === data.avatar_data_url &&
@@ -99,15 +87,21 @@ export const ProfileScreen: React.FC<{
         setBannerUrl((prev) => (prev === data.banner_data_url ? prev : data.banner_data_url));
       } catch {
         // fallback gracefully if server is updating
+      } finally {
+        if (!cancelled) {
+          onRefreshingChangeRef.current?.(false);
+        }
       }
     })();
     return () => {
       cancelled = true;
+      onRefreshingChangeRef.current?.(false);
     };
-  }, [token]);
+  }, [token, refreshSignal]);
 
   const handlePickAvatar = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
     try {
       const dataUrl = await compressImageToDataUrl(file, 256, 256, 0.82);
@@ -120,6 +114,7 @@ export const ProfileScreen: React.FC<{
 
   const handlePickBanner = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
     try {
       const dataUrl = await compressImageToDataUrl(file, 1080, 360, 0.8);
@@ -142,9 +137,12 @@ export const ProfileScreen: React.FC<{
         banner_data_url: bannerUrl,
       });
       setProfile(updated);
+      // The server re-encodes new images: keep its version so the next save sends it unchanged.
+      setAvatarUrl(updated.avatar_data_url);
+      setBannerUrl(updated.banner_data_url);
       setStatusMsg('Perfil salvo com sucesso!');
-    } catch {
-      setStatusMsg('Erro ao salvar perfil. Tente novamente.');
+    } catch (err) {
+      setStatusMsg(err instanceof Error && err.message ? err.message : 'Erro ao salvar perfil. Tente novamente.');
     } finally {
       setSaving(false);
     }
@@ -160,17 +158,38 @@ export const ProfileScreen: React.FC<{
           <input
             ref={avatarInputRef}
             type="file"
-            accept="image/*"
+            accept="image/png,image/jpeg,image/webp,image/gif"
             style={{ display: 'none' }}
             onChange={(e) => void handlePickAvatar(e)}
           />
           <input
             ref={bannerInputRef}
             type="file"
-            accept="image/*"
+            accept="image/png,image/jpeg,image/webp,image/gif"
             style={{ display: 'none' }}
             onChange={(e) => void handlePickBanner(e)}
           />
+
+          {(mediaRestriction || textRestriction) && (
+            <div
+              role="alert"
+              style={{
+                padding: '14px 16px',
+                borderRadius: isMaterialYou ? 20 : 12,
+                backgroundColor: tokens.errorContainer,
+                color: tokens.onErrorContainer,
+                fontSize: '0.84rem',
+                fontWeight: 600,
+                lineHeight: 1.45,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+              }}
+            >
+              {mediaRestriction && <span>{restrictionText(mediaRestriction, 'sua foto e banner')}</span>}
+              {textRestriction && <span>{restrictionText(textRestriction, 'seu nome de exibição e bio')}</span>}
+            </div>
+          )}
 
           {/* Banner + Avatar Hero Card */}
           <div
@@ -183,7 +202,7 @@ export const ProfileScreen: React.FC<{
           >
             {/* Banner */}
             <div
-              onClick={() => bannerInputRef.current?.click()}
+              onClick={() => (mediaRestriction ? setStatusMsg(restrictionText(mediaRestriction, 'sua foto e banner')) : bannerInputRef.current?.click())}
               style={{
                 position: 'relative',
                 height: 140,
@@ -197,7 +216,8 @@ export const ProfileScreen: React.FC<{
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  bannerInputRef.current?.click();
+                  if (mediaRestriction) setStatusMsg(restrictionText(mediaRestriction, 'sua foto e banner'));
+                  else bannerInputRef.current?.click();
                 }}
                 style={{
                   position: 'absolute',
@@ -225,7 +245,7 @@ export const ProfileScreen: React.FC<{
             <div style={{ padding: '0 20px 20px', position: 'relative' }}>
               <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginTop: -42, marginBottom: 12 }}>
                 <div
-                  onClick={() => avatarInputRef.current?.click()}
+                  onClick={() => (mediaRestriction ? setStatusMsg(restrictionText(mediaRestriction, 'sua foto e banner')) : avatarInputRef.current?.click())}
                   style={{
                     position: 'relative',
                     width: 84,
@@ -309,6 +329,7 @@ export const ProfileScreen: React.FC<{
                   maxLength={48}
                   placeholder={profile?.first_name ?? fallbackFirstName}
                   value={displayName}
+                  disabled={Boolean(textRestriction)}
                   onChange={(e) => setDisplayName(e.target.value)}
                   style={{
                     width: '100%',
@@ -333,6 +354,7 @@ export const ProfileScreen: React.FC<{
                   maxLength={240}
                   placeholder="Conte um pouco sobre você, seu curso ou metas no CTI..."
                   value={bio}
+                  disabled={Boolean(textRestriction)}
                   onChange={(e) => setBio(e.target.value)}
                   style={{
                     width: '100%',
@@ -371,7 +393,7 @@ export const ProfileScreen: React.FC<{
 
       <SocialHubCard token={token} />
 
-      <PrivacySettingsCard token={token} />
+      <PrivacySettingsCard token={token} refreshSignal={refreshSignal} />
 
       {/* Mobile: logout lives at the end of the profile (desktop keeps it in the rail footer). */}
       <div className="mobile-only-btn" style={{ display: 'flex', justifyContent: 'center', paddingTop: 4 }}>

@@ -1,7 +1,7 @@
 import { useEffect, type RefObject } from 'react';
 import type { AppTabId } from '../components/ExpressiveNavigation';
 
-const SWIPE_TABS: readonly AppTabId[] = ['boletim', 'ranking', 'frequencia', 'sentinela', 'profile'];
+const SWIPE_TABS: readonly AppTabId[] = ['boletim', 'turma', 'ranking', 'frequencia', 'profile'];
 
 /** Margin from screen edges reserved for Android's system predictive-back gesture. */
 const SYSTEM_EDGE_GUARD_PX = 28;

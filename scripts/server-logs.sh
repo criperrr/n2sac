@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REMOTE_USER="${N2SAC_USER:-criper}"
-REMOTE_HOST="${N2SAC_HOST:-192.168.1.150}"
+REMOTE_HOST="${N2SAC_HOST:-100.69.91.121}"
 REMOTE_DIR="${N2SAC_REMOTE_DIR:-/opt/n2sac}"
 
 MODE="normal"

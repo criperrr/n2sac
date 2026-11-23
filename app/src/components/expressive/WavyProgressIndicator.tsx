@@ -21,6 +21,8 @@ export const CircularWavyProgressIndicator: React.FC<{
   const trackPathRef = useRef<SVGPathElement>(null);
 
   const isDeterminate = typeof progress === 'number';
+  const isDeterminateRef = useRef(isDeterminate);
+  isDeterminateRef.current = isDeterminate;
   const progressRef = useRef(progress ?? 0);
   progressRef.current = progress ?? 0;
 
@@ -32,13 +34,13 @@ export const CircularWavyProgressIndicator: React.FC<{
     const cx = 50;
     const cy = 50;
     const baseR = 35;
-    const maxAmp = 3.9;
+    const maxAmp = 3.6;
     const waveCount = 10;
     const gapRad = (20 * Math.PI) / 180;
 
     const buildWavyArc = (startAngle: number, sweepAngle: number, amp: number, phase: number): string => {
       const clampedSweep = Math.max(0.08, Math.min(Math.PI * 2 - 0.05, sweepAngle));
-      const steps = Math.max(24, Math.round((clampedSweep / (Math.PI * 2)) * 140));
+      const steps = Math.max(24, Math.round((clampedSweep / (Math.PI * 2)) * 120));
       let d = '';
       for (let i = 0; i <= steps; i++) {
         const u = i / steps;
@@ -65,34 +67,48 @@ export const CircularWavyProgressIndicator: React.FC<{
     };
 
     let raf = 0;
-    const startTime = performance.now();
+    let lastTime = performance.now();
+    let spinAngle = -Math.PI / 2;
+    let wavePhase = 0;
+    let breathTime = 0;
+    let currentSweep = 0.2 * Math.PI * 2;
+    let currentAmp = 0;
+    let prevPullProgress = Math.max(0, Math.min(1, progressRef.current));
 
     const tick = (now: number) => {
-      const t = (now - startTime) / 1000;
-      let startAngle: number;
-      let sweepAngle: number;
-      let amp: number;
-      let phase: number;
+      const dt = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000));
+      lastTime = now;
 
-      if (isDeterminate) {
+      let targetSweep: number;
+      let targetAmp: number;
+
+      if (isDeterminateRef.current) {
         const p = Math.max(0, Math.min(1, progressRef.current));
-        startAngle = -Math.PI / 2 + p * Math.PI * 1.6 + t * 1.4;
-        sweepAngle = (0.14 + p * 0.64) * Math.PI * 2;
-        amp = maxAmp * Math.min(1, p * 1.2);
-        phase = t * 7.5 + p * 5;
+        const dp = p - prevPullProgress;
+        prevPullProgress = p;
+        // Gentle rotation proportional to finger pull + soft idle drift
+        spinAngle += dp * Math.PI * 1.15 + dt * (0.45 + p * 0.55);
+        wavePhase += dt * (2.6 + p * 3.2) + dp * 2.5;
+        targetSweep = (0.14 + p * 0.62) * Math.PI * 2;
+        targetAmp = maxAmp * Math.min(1, p * 1.05);
       } else {
-        // Lively M3 Expressive indeterminate spin + breathing arc + fast travelling wave.
-        const cycle = (Math.sin(t * 3.1) + 1) * 0.5;
-        startAngle = -Math.PI / 2 + t * 4.1;
-        sweepAngle = (0.28 + cycle * 0.48) * Math.PI * 2;
-        amp = maxAmp;
-        phase = t * 9.8;
+        // Smooth, calm indeterminate spin + gentle breathing arc
+        breathTime += dt * 2.4;
+        const cycle = (Math.sin(breathTime) + 1) * 0.5;
+        spinAngle += dt * 3.1;
+        wavePhase += dt * 7.2;
+        targetSweep = (0.3 + cycle * 0.42) * Math.PI * 2;
+        targetAmp = maxAmp;
       }
 
-      activeEl.setAttribute('d', buildWavyArc(startAngle, sweepAngle, amp, phase));
+      const blend = Math.min(1, dt * 12);
+      currentSweep += (targetSweep - currentSweep) * blend;
+      currentAmp += (targetAmp - currentAmp) * blend;
 
-      const trackStart = startAngle + sweepAngle + gapRad;
-      const trackSweep = Math.PI * 2 - sweepAngle - gapRad * 2;
+      activeEl.setAttribute('d', buildWavyArc(spinAngle, currentSweep, currentAmp, wavePhase));
+
+      const trackStart = spinAngle + currentSweep + gapRad;
+      const trackSweep = Math.PI * 2 - currentSweep - gapRad * 2;
       trackEl.setAttribute('d', buildSmoothArc(trackStart, trackSweep));
 
       raf = requestAnimationFrame(tick);
@@ -100,7 +116,7 @@ export const CircularWavyProgressIndicator: React.FC<{
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [isDeterminate]);
+  }, []);
 
   const activeStroke = color ?? tokens.primary;
   const inactiveStroke = trackColor ?? `${tokens.primary}38`;
@@ -139,14 +155,14 @@ export const CircularWavyProgressIndicator: React.FC<{
   );
 };
 
-const TRIGGER_PX = 64;
-const REFRESH_HOLD_PX = 64;
-const MAX_TENSION_PX = 96;
+const TRIGGER_PX = 52;
+const REFRESH_HOLD_PX = 50;
+const MAX_TENSION_PX = 66;
 
 /**
- * MIUI-style sticky rubber-band Pull-to-Refresh container for mobile:
- * pulling down from the top pushes the page content down with asymptotic tension,
- * revealing the M3 Expressive wavy indicator in the empty space above the page.
+ * Smooth, heavily damped Pull-to-Refresh container for mobile:
+ * pulling down from the top gently reveals the M3 Expressive wavy indicator with strong
+ * logarithmic resistance past the trigger threshold so over-pulling never builds up whip tension.
  */
 export const MobilePullToRefreshContainer: React.FC<{
   refreshing: boolean;
@@ -155,6 +171,7 @@ export const MobilePullToRefreshContainer: React.FC<{
 }> = ({ refreshing, onRefresh, children }) => {
   const [pullPx, setPullPx] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [pendingTriggerHold, setPendingTriggerHold] = useState(false);
 
   const pullingRef = useRef(false);
   const startYRef = useRef(0);
@@ -165,6 +182,16 @@ export const MobilePullToRefreshContainer: React.FC<{
   refreshingRef.current = refreshing;
 
   useEffect(() => {
+    if (!refreshing && pendingTriggerHold) {
+      const timer = window.setTimeout(() => setPendingTriggerHold(false), 180);
+      return () => window.clearTimeout(timer);
+    }
+    if (refreshing && pendingTriggerHold) {
+      setPendingTriggerHold(false);
+    }
+  }, [refreshing, pendingTriggerHold]);
+
+  useEffect(() => {
     const onTouchStart = (e: TouchEvent) => {
       if (window.innerWidth >= 920 || refreshingRef.current || e.touches.length !== 1) return;
       if (window.scrollY > 2) return;
@@ -172,6 +199,9 @@ export const MobilePullToRefreshContainer: React.FC<{
 
       const touch = e.touches[0]!;
       pullingRef.current = true;
+      // Blocking touchmove only while a pull can actually happen: a permanent non-passive window
+      // listener makes every scroll in the app wait for the main thread.
+      window.addEventListener('touchmove', onTouchMove, { passive: false });
       lockedRef.current = 'none';
       startXRef.current = touch.clientX;
       startYRef.current = touch.clientY;
@@ -202,14 +232,19 @@ export const MobilePullToRefreshContainer: React.FC<{
           setPullPx(0);
           return;
         }
-        // Asymptotic rubber-band tension: smooth resistance that caps at MAX_TENSION_PX
-        const tension = MAX_TENSION_PX * (1 - Math.exp(-dy / 165));
+        if (e.cancelable) {
+          e.preventDefault();
+        }
+        // Soft damped tension: reaches ~52px comfortably, then gently asymptotes at 66px
+        // so dragging far down the screen never accumulates excessive distance or snap-back force.
+        const tension = MAX_TENSION_PX * (1 - Math.exp(-dy / 185));
         pullPxRef.current = tension;
         setPullPx(tension);
       }
     };
 
     const finishPull = () => {
+      window.removeEventListener('touchmove', onTouchMove);
       if (!pullingRef.current) return;
       pullingRef.current = false;
       setDragging(false);
@@ -218,12 +253,12 @@ export const MobilePullToRefreshContainer: React.FC<{
       pullPxRef.current = 0;
       setPullPx(0);
       if (triggered && !refreshingRef.current) {
+        setPendingTriggerHold(true);
         onRefresh();
       }
     };
 
     window.addEventListener('touchstart', onTouchStart, { passive: true });
-    window.addEventListener('touchmove', onTouchMove, { passive: true });
     window.addEventListener('touchend', finishPull, { passive: true });
     window.addEventListener('touchcancel', finishPull, { passive: true });
 
@@ -235,15 +270,17 @@ export const MobilePullToRefreshContainer: React.FC<{
     };
   }, [onRefresh]);
 
-  const offset = refreshing ? REFRESH_HOLD_PX : pullPx;
+  const isHolding = refreshing || pendingTriggerHold;
+  const offset = isHolding ? REFRESH_HOLD_PX : pullPx;
   const progress = Math.min(1, offset / TRIGGER_PX);
-  const showIndicator = offset > 4;
+  const showIndicator = offset > 3;
 
   return (
     <div style={{ position: 'relative', width: '100%' }}>
-      {/* Revealed empty gap above the pushed-down page */}
+      {/* Revealed gap above the page — opted out of contentSizeMorph so it never double-springs */}
       <div
         className="mobile-only-btn"
+        data-no-size-morph
         aria-hidden={!showIndicator}
         style={{
           height: offset,
@@ -251,24 +288,28 @@ export const MobilePullToRefreshContainer: React.FC<{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          transition: dragging ? 'none' : 'height 320ms cubic-bezier(0.05, 0.7, 0.1, 1)',
+          transition: dragging ? 'none' : 'height 380ms cubic-bezier(0.25, 0.85, 0.35, 1)',
         }}
       >
         <div
+          data-no-size-morph
           style={{
-            opacity: refreshing ? 1 : Math.min(1, progress * 1.25),
-            transform: `scale(${refreshing ? 1 : 0.65 + progress * 0.35})`,
-            transition: dragging ? 'none' : 'transform 260ms cubic-bezier(0.05, 0.7, 0.1, 1), opacity 200ms ease',
+            opacity: isHolding ? 1 : Math.min(1, progress * 1.15),
+            transform: `scale(${isHolding ? 1 : 0.72 + progress * 0.28})`,
+            transition:
+              dragging
+                ? 'none'
+                : 'transform 340ms cubic-bezier(0.25, 0.85, 0.35, 1), opacity 260ms ease-out',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
           }}
         >
-          {(showIndicator || refreshing) && (
+          {(showIndicator || isHolding) && (
             <CircularWavyProgressIndicator
-              size={38}
-              progress={refreshing ? undefined : progress}
-              label="Atualizando notas"
+              size={36}
+              progress={isHolding ? undefined : progress}
+              label="Atualizando página"
             />
           )}
         </div>

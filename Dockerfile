@@ -7,14 +7,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     ca-certificates \
+    clang \
+    lld \
     && rm -rf /var/lib/apt/lists/*
 
+ENV RUSTFLAGS="-C linker=clang -C link-arg=-fuse-ld=lld"
+
+# 1. Cache all ~320 third-party Rust crates in a dedicated layer (works with both classic & BuildKit).
 COPY Cargo.toml Cargo.lock ./
+COPY nsac-core/Cargo.toml ./nsac-core/Cargo.toml
+COPY nsac-server/Cargo.toml ./nsac-server/Cargo.toml
+RUN mkdir -p nsac-core/src nsac-server/src && \
+    echo "pub fn _dummy() {}" > nsac-core/src/lib.rs && \
+    echo "pub fn _dummy() {}" > nsac-server/src/lib.rs && \
+    echo "fn main() {}" > nsac-server/src/main.rs && \
+    cargo build --release -p nsac-server && \
+    rm -rf nsac-core/src nsac-server/src
+
+# 2. Copy actual workspace sources and recompile ONLY nsac-core + nsac-server (~25-40s).
 COPY migrations ./migrations
 COPY nsac-core ./nsac-core
 COPY nsac-server ./nsac-server
-
-RUN cargo build --release -p nsac-server
+RUN touch nsac-core/src/lib.rs nsac-server/src/lib.rs nsac-server/src/main.rs && \
+    cargo build --release -p nsac-server
 
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app

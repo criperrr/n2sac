@@ -6,8 +6,22 @@ import { APP_VERSION, formatVersionLabel } from '../appVersion';
 import { showBootSplashForReload } from './bootSplash';
 
 export const CURRENT_APP_VERSION = APP_VERSION;
-const GITHUB_RELEASES_API =
-  'https://api.github.com/repos/criperrr/n2sac/releases/latest';
+const GITHUB_REPO = 'criperrr/n2sac';
+const GITHUB_RELEASES_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+const GITHUB_RELEASES_BASE = `https://github.com/${GITHUB_REPO}/releases`;
+
+export function githubApkDownloadUrl(version: string): string {
+  const clean = version.trim().replace(/^v/i, '') || CURRENT_APP_VERSION;
+  return `${GITHUB_RELEASES_BASE}/download/v${clean}/n2sac-${clean}.apk`;
+}
+
+function resolveApkUrlToGitHub(rawUrl: string | undefined, version: string): string {
+  const trimmed = (rawUrl ?? '').trim();
+  if (trimmed.startsWith('https://github.com/') || trimmed.startsWith('https://objects.githubusercontent.com/')) {
+    return trimmed;
+  }
+  return githubApkDownloadUrl(version);
+}
 const LAST_BUILD_ID_KEY = 'n2sac_ota_build_id_v1';
 // v2 key: versions stored under v1 belong to the pre-release 2.0.x numbering and must not
 // outrank the restarted 1.x line.
@@ -78,12 +92,23 @@ export interface NativeUpdateInfo {
   releaseUrl: string;
   buildId?: string;
   important?: boolean;
+  apkSha256?: string;
+  cachedReady?: boolean;
   notes: string;
+}
+
+export interface CachedNativeApkMeta {
+  version: string;
+  sha256: string;
+  apkUrl?: string;
+  ready: boolean;
 }
 
 interface AndroidUpdaterBridge {
   getInstalledVersion?: () => string;
+  getCachedApkInfo?: () => string;
   downloadApk?: (url: string) => void;
+  downloadApkWithChecksum?: (url: string, expectedSha256: string, version: string) => void;
   installDownloadedApk?: () => void;
 }
 
@@ -133,8 +158,31 @@ export async function fetchLatestServerVersion(): Promise<ServerVersionSnapshot>
   }
 }
 
-export function startNativeApkDownload(url: string): boolean {
+export function getCachedNativeApkInfo(): CachedNativeApkMeta | null {
   const bridge = getAndroidUpdaterBridge();
+  if (!bridge?.getCachedApkInfo) return null;
+  try {
+    const raw = bridge.getCachedApkInfo().trim();
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CachedNativeApkMeta>;
+    if (!parsed.ready || !parsed.version || !parsed.sha256) return null;
+    return {
+      version: parsed.version,
+      sha256: parsed.sha256,
+      apkUrl: parsed.apkUrl,
+      ready: true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function startNativeApkDownload(url: string, expectedSha256 = '', version = ''): boolean {
+  const bridge = getAndroidUpdaterBridge();
+  if (bridge?.downloadApkWithChecksum) {
+    bridge.downloadApkWithChecksum(url, expectedSha256, version);
+    return true;
+  }
   if (!bridge?.downloadApk) return false;
   bridge.downloadApk(url);
   return true;
@@ -214,30 +262,39 @@ export async function checkServerOtaUpdate(): Promise<NativeUpdateInfo | null> {
       important?: boolean;
       apkUrl?: string;
       apkVersion?: string;
+      apkSha256?: string;
       notes?: string;
     };
     const remoteVersion = (data.version ?? '').trim();
     const remoteBuildId = (data.buildId ?? '').trim();
     const prevBuildId = localStorage.getItem(LAST_BUILD_ID_KEY);
 
-    // 1) Important native APK update hosted on our own server (Android only).
-    if (data.important && data.apkUrl && Capacitor.isNativePlatform()) {
+    // 1) Important native APK update distributed via GitHub Releases (Android only).
+    if (data.important && Capacitor.isNativePlatform()) {
       const targetApkVersion = (data.apkVersion ?? remoteVersion).trim();
       const installedNative = getInstalledNativeVersion();
       if (targetApkVersion && compareSemver(targetApkVersion, installedNative) > 0) {
-        const resolvedUrl = data.apkUrl.startsWith('http')
-          ? data.apkUrl
-          : `${base}${data.apkUrl.startsWith('/') ? '' : '/'}${data.apkUrl}`;
+        const resolvedUrl = resolveApkUrlToGitHub(data.apkUrl, targetApkVersion);
+        const releaseTag = targetApkVersion.replace(/^v/i, '');
+        const apkSha256 = (data.apkSha256 ?? '').trim().toLowerCase() || undefined;
+        const cached = getCachedNativeApkInfo();
+        const cachedReady = Boolean(
+          cached &&
+            compareSemver(cached.version, targetApkVersion) >= 0 &&
+            (!apkSha256 || cached.sha256.toLowerCase() === apkSha256)
+        );
         return {
           version: targetApkVersion,
-          source: 'server-apk',
+          source: 'github-release',
           downloadUrl: resolvedUrl,
-          releaseUrl: resolvedUrl,
+          releaseUrl: `${GITHUB_RELEASES_BASE}/tag/v${releaseTag}`,
           buildId: remoteBuildId || undefined,
           important: true,
+          apkSha256,
+          cachedReady,
           notes:
             (data.notes ?? '').trim() ||
-            'Esta atualização traz melhorias nativas importantes (como o gesto de voltar preditivo do Android).',
+            'Esta atualização traz melhorias nativas importantes no aplicativo Android.',
         };
       }
     }
@@ -327,8 +384,37 @@ export async function checkGitHubNativeRelease(): Promise<NativeUpdateInfo | nul
  * Checks both GitHub Releases (native APK) and Server OTA (`/version.json`).
  */
 export async function checkAllUpdates(): Promise<NativeUpdateInfo | null> {
-  const [gh, ota] = await Promise.all([checkGitHubNativeRelease(), checkServerOtaUpdate()]);
-  return gh ?? ota;
+  const [ota, gh] = await Promise.all([checkServerOtaUpdate(), checkGitHubNativeRelease()]);
+  const chosen = ota?.source === 'github-release' ? ota : gh ?? ota;
+  const cached = getCachedNativeApkInfo();
+  if (chosen) {
+    if (
+      chosen.source !== 'server-ota' &&
+      cached &&
+      compareSemver(cached.version, chosen.version) >= 0
+    ) {
+      return {
+        ...chosen,
+        apkSha256: chosen.apkSha256 ?? cached.sha256,
+        cachedReady: true,
+      };
+    }
+    return chosen;
+  }
+  if (cached && compareSemver(cached.version, getInstalledNativeVersion()) > 0) {
+    const clean = cached.version.replace(/^v/i, '');
+    return {
+      version: cached.version,
+      source: 'github-release',
+      downloadUrl: cached.apkUrl || githubApkDownloadUrl(cached.version),
+      releaseUrl: `${GITHUB_RELEASES_BASE}/tag/v${clean}`,
+      important: true,
+      apkSha256: cached.sha256,
+      cachedReady: true,
+      notes: 'A nova versão já foi baixada e verificada em segundo plano. Toque em Instalar agora.',
+    };
+  }
+  return null;
 }
 
 export interface AndroidWebApkOffer {
@@ -368,10 +454,7 @@ export async function fetchAndroidWebApkOffer(): Promise<AndroidWebApkOffer | nu
       notes?: string;
     };
     const version = (data.apkVersion ?? data.version ?? CURRENT_APP_VERSION).trim() || CURRENT_APP_VERSION;
-    const rawUrl = (data.apkUrl ?? `/downloads/n2sac-${version}.apk`).trim();
-    const apkUrl = rawUrl.startsWith('http')
-      ? rawUrl
-      : `${versionBase}${rawUrl.startsWith('/') ? '' : '/'}${rawUrl}`;
+    const apkUrl = resolveApkUrlToGitHub(data.apkUrl, version);
     return {
       version,
       apkUrl,
@@ -380,7 +463,7 @@ export async function fetchAndroidWebApkOffer(): Promise<AndroidWebApkOffer | nu
   } catch {
     return {
       version: CURRENT_APP_VERSION,
-      apkUrl: `/downloads/n2sac-${CURRENT_APP_VERSION}.apk`,
+      apkUrl: githubApkDownloadUrl(CURRENT_APP_VERSION),
       notes: '',
     };
   }

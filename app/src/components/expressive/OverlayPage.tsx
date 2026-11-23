@@ -3,20 +3,15 @@ import { usePageScrollLock } from '../../theme/scrollLock';
 import { createPortal } from 'react-dom';
 import { useM3Theme } from '../../theme/ThemeContext';
 import { useBackLayer } from '../../navigation/backStack';
-import { DURATION, EASING, animateSharedAxisX, prefersReducedMotion } from '../../theme/motion';
-
-/** Shared axis X timing (MDC: long1 + emphasized). */
-const ENTER = { duration: DURATION.long1, easing: EASING.emphasizedDecelerate };
-const EXIT = { duration: DURATION.medium2, easing: EASING.emphasizedAccelerate };
+import { animateOverlayPageTransition, prefersReducedMotion } from '../../theme/motion';
 
 /**
- * Full-screen page pushed above the current screen with the M3 shared axis X (forward) pattern:
- * it slides in 30dp from the end with a fade through, while the page underneath slides 30dp to
- * the start and fades out. Closing plays the backward pattern. The page underneath stays
- * mounted, so the predictive back gesture can reveal it.
+ * Full-screen page pushed above the current screen: enters from the right and overlays the
+ * current page (exact inverse of Android predictive-back exit), keeping the underlying screen
+ * mounted and visible underneath.
  *
  * Covers only the content area: the desktop rail and the mobile bottom navigation stay visible.
- * `children` receives `close()`, which plays the backward transition before calling `onClose`.
+ * `children` receives `close()`, which plays the exit animation before calling `onClose`.
  */
 export const OverlayPage: React.FC<{
   ariaLabel: string;
@@ -26,52 +21,23 @@ export const OverlayPage: React.FC<{
   const { tokens } = useM3Theme();
   const closingRef = useRef(false);
   const surfaceRef = useRef<HTMLDivElement>(null);
-  const underlayAnimations = useRef<Animation[]>([]);
-
-  const underlay = () => document.querySelector<HTMLElement>('.nsac-page-content');
-
-  const revealUnderlay = () => {
-    underlayAnimations.current.forEach((a) => a.cancel());
-    underlayAnimations.current = [];
-  };
-
-  /** Pins the page underneath in its "covered" end state (slid to the start, invisible). */
-  const coverUnderlay = (animate: boolean) => {
-    const el = underlay();
-    if (!el) return;
-    revealUnderlay();
-    const timing = animate && !prefersReducedMotion() ? ENTER : { duration: 1, easing: EASING.linear };
-    underlayAnimations.current = animateSharedAxisX(el, 'leave', true, timing, 'forwards');
-  };
 
   useLayoutEffect(() => {
     const surface = surfaceRef.current;
-    if (surface && !prefersReducedMotion()) animateSharedAxisX(surface, 'enter', true, ENTER, 'backwards');
-    coverUnderlay(true);
-    return revealUnderlay;
-    // Runs once per mount: the pattern belongs to this page's lifetime.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (surface && !prefersReducedMotion()) animateOverlayPageTransition(surface, 'enter');
   }, []);
 
   const close = useCallback(() => {
     if (closingRef.current) return;
     closingRef.current = true;
     const surface = surfaceRef.current;
-    const el = underlay();
     if (!surface || prefersReducedMotion()) {
-      revealUnderlay();
       onClose();
       return;
     }
-    // Backward shared axis X: this page slides to the end and fades out, the page below returns.
     surface.style.pointerEvents = 'none';
-    const [out] = animateSharedAxisX(surface, 'leave', false, EXIT, 'forwards');
-    revealUnderlay();
-    if (el) underlayAnimations.current = animateSharedAxisX(el, 'enter', false, EXIT, 'forwards');
-    out!.finished.then(() => {
-      revealUnderlay();
-      onClose();
-    });
+    const anim = animateOverlayPageTransition(surface, 'leave');
+    anim.finished.then(() => onClose());
   }, [onClose]);
 
   useBackLayer(
@@ -79,7 +45,6 @@ export const OverlayPage: React.FC<{
     (source) => {
       if (source === 'gesture') {
         closingRef.current = true;
-        revealUnderlay();
         onClose();
       } else {
         close();
@@ -88,9 +53,6 @@ export const OverlayPage: React.FC<{
     {
       kind: 'page',
       surfaceRef,
-      // The predictive back preview must reveal the real page underneath.
-      onGestureStart: revealUnderlay,
-      onGestureCancel: () => coverUnderlay(false),
     }
   );
 

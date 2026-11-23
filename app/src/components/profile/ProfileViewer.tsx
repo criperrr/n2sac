@@ -14,8 +14,9 @@ import {
   UserRound,
   Users,
   X,
+  Flag,
 } from 'lucide-react';
-import type { SocialPushEventDetail } from '../../notifications/pushService';
+import { consumePendingSocialPushOpen, type SocialPushEventDetail } from '../../notifications/pushService';
 import {
   acceptFollowRequest,
   blockStudent,
@@ -33,12 +34,13 @@ import { ExpressiveModal, MetricTile, ModalIconButton } from '../expressive/Expr
 import { EnhancedMorphButton, RevealNumber } from '../expressive/ExpressivePrimitives';
 import { MorphingShapeIndicator } from '../expressive/ShapeMorph';
 import { ShimmerVeil } from '../expressive/ShimmerVeil';
-import { FriendChatModal, type ChatPeerTarget } from '../social/FriendChatModal';
+import { ChatScreen, type ChatPeerTarget } from '../social/chat/ChatScreen';
 import {
   FriendshipCelebrationModal,
   type FriendshipCelebrationTarget,
 } from '../social/FriendshipCelebration';
 import { ProfileAvatar, useProfileImage } from './ProfileAvatar';
+import { ReportSheet } from './ReportSheet';
 
 /** What the opener already knows, shown instantly while the full profile loads. */
 export interface ProfilePreview {
@@ -120,8 +122,7 @@ export const ProfileViewerProvider: React.FC<{
         showNotice(msg);
       }
     };
-    const onPushOpen = (ev: Event) => {
-      const detail = (ev as CustomEvent<SocialPushEventDetail>).detail;
+    const handleSocialPushOpen = (detail: SocialPushEventDetail) => {
       if (!detail || !detail.actorId) return;
       bumpSocialRevision();
       if (detail.kind === 'chat_message') {
@@ -138,11 +139,24 @@ export const ProfileViewerProvider: React.FC<{
         });
       }
     };
+    const onPushOpen = (ev: Event) => {
+      const detail = (ev as CustomEvent<SocialPushEventDetail>).detail;
+      if (detail) handleSocialPushOpen(detail);
+    };
+    const pendingSocial = consumePendingSocialPushOpen();
+    if (pendingSocial) {
+      handleSocialPushOpen(pendingSocial);
+    }
+    const onManualSocialRefresh = () => {
+      bumpSocialRevision();
+    };
     window.addEventListener('n2sac:social-push', onPush);
     window.addEventListener('n2sac:social-push-open', onPushOpen);
+    window.addEventListener('n2sac:social-refresh', onManualSocialRefresh);
     return () => {
       window.removeEventListener('n2sac:social-push', onPush);
       window.removeEventListener('n2sac:social-push-open', onPushOpen);
+      window.removeEventListener('n2sac:social-refresh', onManualSocialRefresh);
     };
   }, [token, chatPeer?.accountId, bumpSocialRevision, showNotice, openChat, openProfile]);
 
@@ -172,7 +186,8 @@ export const ProfileViewerProvider: React.FC<{
           onClose={() => setOpen(null)}
           originEl={open.origin}
           maxWidth={460}
-          zIndex={10050}
+          // Above the full-screen chat, which opens profiles from its header.
+          zIndex={10120}
         >
           {(close) => {
             const closeAnd = (after?: () => void) =>
@@ -192,7 +207,7 @@ export const ProfileViewerProvider: React.FC<{
         </ExpressiveModal>
       )}
       {chatPeer && token && (
-        <FriendChatModal
+        <ChatScreen
           token={token}
           peer={chatPeer}
           onClose={() => {
@@ -262,6 +277,7 @@ const ProfileSheet: React.FC<{
   const [state, setState] = useState<'loading' | 'ready' | 'private' | 'error'>('loading');
   const [socialBusy, setSocialBusy] = useState(false);
   const [confirmBlock, setConfirmBlock] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
 
   const loadProfile = useCallback(async () => {
     setState('loading');
@@ -454,6 +470,23 @@ const ProfileSheet: React.FC<{
           <ShimmerVeil active={bannerPending} />
         </div>
         <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 2, display: 'flex', gap: 6 }}>
+          {!isMe && state === 'ready' && (
+            <ModalIconButton label="Denunciar perfil" onClick={() => setReportOpen(true)}>
+              <Flag size={16} />
+            </ModalIconButton>
+          )}
+          {reportOpen && (
+            <ReportSheet
+              token={token}
+              accountId={preview.accountId}
+              label={label}
+              onClose={() => setReportOpen(false)}
+              onDone={(message) => {
+                setReportOpen(false);
+                showNotice(message);
+              }}
+            />
+          )}
           {!isMe && state === 'ready' && rel && (
             <ModalIconButton
               label={rel.blocked_by_me ? 'Desbloquear aluno' : confirmBlock ? 'Confirmar bloqueio' : 'Bloquear aluno'}

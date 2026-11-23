@@ -59,6 +59,18 @@ pub async fn put_ranking_preferences(
     )
     .await?;
 
+    if body.display_name.as_deref().is_some_and(|n| !n.trim().is_empty())
+        && let Some(r) = state
+            .moderation()
+            .restriction(target.account_id, crate::db::moderation::ReportKind::Text)
+            .await?
+    {
+        let current = state.ranking().get_preferences(target.account_id).await?;
+        if current.display_name.as_deref() != body.display_name.as_deref().map(str::trim) {
+            return Err(crate::db::ModerationRepo::restricted_error(&r));
+        }
+    }
+
     let updated = state
         .ranking()
         .upsert_preferences(

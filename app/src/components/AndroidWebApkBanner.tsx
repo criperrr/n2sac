@@ -11,7 +11,7 @@ const PILL_DISMISSED_KEY = 'n2sac_android_web_apk_pill_dismissed_v1';
 
 /**
  * Shown only when an Android user accesses the web version in a mobile browser (Chrome, Firefox,
- * Samsung Internet, Brave, etc.). Suggests downloading the latest official APK hosted on the server,
+ * Samsung Internet, Brave, etc.). Suggests downloading the latest official APK from GitHub Releases,
  * and collapses to a discrete floating pill if the user chooses to continue in the browser.
  */
 export const AndroidWebApkPrompt: React.FC = () => {
@@ -106,7 +106,7 @@ export const AndroidWebApkPrompt: React.FC = () => {
                 }}
               >
                 <div style={{ color: tokens.onSurface, fontWeight: 700 }}>
-                  Instale o APK oficial direto do nosso servidor para ter a experiência completa:
+                  Instale o APK oficial pelo GitHub Releases para ter a experiência completa:
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>

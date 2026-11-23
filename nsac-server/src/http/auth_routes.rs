@@ -114,6 +114,8 @@ pub async fn login(
             .heuristic
             .initialize_class_on_login(code, &class_hash, account.id, now)
             .await?;
+        // Ensure mandatory class room exists for the student's current (class_code, school_year).
+        let _ = state.classrooms().resolve_user_classroom(account.id).await;
     }
 
     let session = state

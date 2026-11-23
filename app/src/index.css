@@ -11,6 +11,7 @@ body {
   padding: 0;
   width: 100%;
   max-width: 100vw;
+  overscroll-behavior-y: none;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background-color: var(--m3-background, #0d0d0d);
   color: var(--m3-on-background, #f5f5f5);
@@ -238,8 +239,8 @@ code {
   min-height: 60px;
   padding: calc(env(safe-area-inset-top, 0px) + 6px) 14px 6px;
   background-color: var(--nsac-bar-bg-glass, var(--m3-surface));
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
   transform: translateZ(0);
   display: flex;
   align-items: center;
@@ -266,9 +267,9 @@ code {
   height: 66px;
   border-radius: 9999px;
   background-color: var(--nsac-pill-bg-glass, var(--m3-surface-container-high));
-  backdrop-filter: blur(22px) saturate(180%);
-  -webkit-backdrop-filter: blur(22px) saturate(180%);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   align-items: center;
@@ -277,22 +278,22 @@ code {
   z-index: 50;
 }
 
-/*
- * Mobile/touch GPU optimization: avoid full-backdrop 20-22px Gaussian blur + saturate(180%)
- * over scrolling lists on Mali/Adreno GPUs; use a crisp 95%-opaque translucent surface instead.
- */
-@media (hover: none), (max-width: 900px) {
-  .nsac-top-bar {
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-    background-color: var(--nsac-bar-bg-opaque, var(--m3-surface));
-  }
-
-  .nsac-floating-bottom-pill {
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-    background-color: var(--nsac-pill-bg-opaque, var(--m3-surface-container-high));
-  }
+/* Low-end hardware optimization (<= 4 cores or <= 3GB RAM): eliminate full-screen GPU blur readbacks */
+html.n2sac-low-end .nsac-top-bar,
+html.n2sac-low-end .nsac-floating-bottom-pill,
+html.n2sac-low-end .nsac-chat-menu-scrim {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+html.n2sac-low-end .n2sac-crown-halo {
+  animation: none !important;
+}
+html.n2sac-low-end .nsac-top-bar {
+  background-color: color-mix(in srgb, var(--m3-surface) 96%, transparent);
+}
+html.n2sac-low-end .nsac-floating-bottom-pill {
+  background-color: color-mix(in srgb, var(--m3-surface-container-high) 97%, transparent);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
 }
 
 @media (min-width: 920px) {
@@ -326,19 +327,46 @@ code {
 @keyframes m3FadeThroughIn {
   0% {
     opacity: 0;
-    scale: 0.92;
-  }
-  35% {
-    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(0.985);
   }
   100% {
     opacity: 1;
-    scale: none;
+    transform: none;
+  }
+}
+
+@keyframes m3AxisXForwardIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(28px, 0, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes m3AxisXBackwardIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(-28px, 0, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
   }
 }
 
 .m3-page-transition {
-  animation: m3FadeThroughIn 300ms cubic-bezier(0.2, 0, 0, 1) both;
+  animation: m3FadeThroughIn 280ms cubic-bezier(0.05, 0.7, 0.1, 1) both;
+}
+
+.m3-page-axis-x-forward {
+  animation: m3AxisXForwardIn 320ms cubic-bezier(0.05, 0.7, 0.1, 1) both;
+}
+
+.m3-page-axis-x-backward {
+  animation: m3AxisXBackwardIn 320ms cubic-bezier(0.05, 0.7, 0.1, 1) both;
 }
 
 /*
@@ -403,8 +431,270 @@ code {
 }
 
 .m3-segmented-card {
-  animation: m3CardStaggerEnter 300ms cubic-bezier(0.2, 0, 0, 1) both;
-  will-change: border-radius, transform;
+  animation: m3CardStaggerEnter 260ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+@keyframes nsacActionMenuIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -6px, 0) scale(0.88);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes nsacActionMenuOut {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, -6px, 0) scale(0.86);
+  }
+}
+
+@keyframes nsacComposerBannerIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes nsacComposerBannerOut {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+}
+
+@keyframes nsacReactionPop {
+  from {
+    opacity: 0;
+    transform: scale(0.45) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes nsacReactionBadgeIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.35) translateY(5px);
+  }
+  58% {
+    opacity: 1;
+    transform: scale(1.18) translateY(-1px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes nsacEmojiBurstFloat {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.25) rotate(-14deg);
+  }
+  28% {
+    opacity: 1;
+    transform: translate(-50%, -62%) scale(1.35) rotate(8deg);
+  }
+  62% {
+    opacity: 1;
+    transform: translate(-50%, -88%) scale(1.04) rotate(-4deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -155%) scale(1.12) rotate(0deg);
+  }
+}
+
+.nsac-action-menu-in {
+  animation: nsacActionMenuIn 260ms var(--m3-spring-fast-spatial, cubic-bezier(0.2, 0.9, 0.25, 1)) both;
+}
+
+.nsac-action-menu-out {
+  animation: nsacActionMenuOut 180ms cubic-bezier(0.3, 0, 0.8, 0.15) both;
+  pointer-events: none;
+}
+
+.nsac-composer-banner-in {
+  animation: nsacComposerBannerIn 220ms var(--m3-spring-fast-spatial, cubic-bezier(0.2, 0.9, 0.25, 1)) both;
+}
+
+.nsac-composer-banner-out {
+  animation: nsacComposerBannerOut 160ms cubic-bezier(0.3, 0, 0.8, 0.15) both;
+  pointer-events: none;
+}
+
+.nsac-reaction-pop {
+  animation: nsacReactionPop 260ms var(--m3-spring-fast-spatial, cubic-bezier(0.2, 0.9, 0.25, 1)) both;
+  transition: transform 150ms var(--m3-spring-fast-spatial, cubic-bezier(0.2, 0.9, 0.25, 1));
+}
+.nsac-reaction-pop:active {
+  transform: scale(1.38);
+}
+
+.nsac-reaction-badge-in {
+  animation: nsacReactionBadgeIn 340ms var(--m3-spring-fast-spatial, cubic-bezier(0.2, 0.9, 0.25, 1)) both;
+  transition: transform 150ms ease, background-color 180ms ease, border-color 180ms ease;
+}
+.nsac-reaction-badge-in:active {
+  transform: scale(0.86);
+}
+
+.nsac-chat-emoji-burst {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  font-size: 2.45rem;
+  line-height: 1;
+  pointer-events: none;
+  z-index: 6;
+  animation: nsacEmojiBurstFloat 820ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.26));
+}
+
+/* Grade reveal count-up & Perfect 10,0 celebration */
+@keyframes nsacGradeSettle {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes nsacTenSuspense {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(245, 197, 66, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(245, 197, 66, 0.08);
+  }
+}
+
+@keyframes nsacPerfectTenPop {
+  0% {
+    transform: scale(0.92);
+  }
+  38% {
+    transform: scale(1.24);
+  }
+  68% {
+    transform: scale(0.96);
+  }
+  86% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes nsacTenShimmer {
+  0% {
+    transform: translateX(-140%) skewX(-22deg);
+  }
+  100% {
+    transform: translateX(240%) skewX(-22deg);
+  }
+}
+
+@keyframes nsacTenSparkle {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(0.4) rotate(0deg);
+  }
+  55% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--tx, 0px), var(--ty, -36px), 0) scale(1.15) rotate(140deg);
+  }
+}
+
+.nsac-grade-settle {
+  animation: nsacGradeSettle 280ms var(--m3-spring-fast-spatial, cubic-bezier(0.2, 0.9, 0.25, 1)) both;
+}
+
+.nsac-ten-suspense {
+  animation: nsacTenSuspense 680ms ease-in-out infinite;
+}
+
+.nsac-perfect-ten-badge {
+  position: relative;
+  overflow: hidden;
+  animation: nsacPerfectTenPop 420ms cubic-bezier(0.16, 1.18, 0.3, 1) both;
+}
+
+.nsac-perfect-ten-badge::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 55%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  animation: nsacTenShimmer 950ms ease-out 120ms 1 both;
+  pointer-events: none;
+}
+
+.nsac-ten-sparkle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-left: -3px;
+  margin-top: -3px;
+  border-radius: 2px;
+  pointer-events: none;
+  animation: nsacTenSparkle 860ms cubic-bezier(0.12, 0.9, 0.24, 1) forwards;
+}
+
+@keyframes nsacSunburstAppear {
+  from {
+    opacity: 0;
+    scale: 0.45;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+@keyframes nsacSunburstSteadySpin {
+  from {
+    transform: rotate(var(--nsac-sun-angle, 0deg));
+  }
+  to {
+    transform: rotate(calc(var(--nsac-sun-angle, 0deg) + 360deg));
+  }
+}
+
+.nsac-ten-sunburst-wrap {
+  animation: nsacSunburstAppear 260ms var(--m3-spring-fast-spatial, cubic-bezier(0.2, 0.9, 0.25, 1)) both;
+}
+
+.nsac-ten-sunburst-steady {
+  animation: nsacSunburstSteadySpin 8.5s linear infinite;
 }
 
 .m3-table-row-stagger {
@@ -583,6 +873,14 @@ html[data-vt]::view-transition-old(nsac-bottom-bar) {
 
 html[data-vt]::view-transition-group(nsac-page) {
   z-index: 10;
+}
+
+html[data-vt]::view-transition-old(nsac-page),
+html[data-vt]::view-transition-new(nsac-page) {
+  height: auto;
+  width: 100%;
+  object-fit: none;
+  object-position: top left;
 }
 
 html[data-vt]::view-transition-group(nsac-top-bar) {
@@ -1045,9 +1343,11 @@ html.n2sac-scroll-locked .n2sac-crown-halo {
   }
 }
 
-/* Dialogs: a scroll that reaches the end of a dialog never chains to the page behind it. */
-[role='dialog'],
-[role='dialog'] * {
+/* Dialogs: a scroll that reaches the end of a dialog never chains to the page behind it.
+   Applied only to the dialog root (not every descendant `*`, because `overscroll-behavior: contain`
+   on `<input>`, `<textarea>`, or `overflow: hidden` containers blocks touch-scroll chaining to
+   the dialog's own scroller on Android WebView). */
+[role='dialog'] {
   overscroll-behavior: contain;
 }
 
@@ -1262,4 +1562,503 @@ html.n2sac-scroll-locked .n2sac-crown-halo {
   .n2sac-friend-confetti {
     animation: none !important;
   }
+}
+
+/* ------------------------------------------------------------------ Keyboard (IME) */
+/* The window no longer pans when the keyboard opens: pages leave room for it themselves. */
+html.nsac-ime-open .nsac-page-content,
+html.nsac-ime-open .nsac-overlay-page-content {
+  padding-bottom: calc(var(--nsac-ime-height, 0px) + 24px);
+}
+
+/* ------------------------------------------------------------------ Full-screen chat */
+.nsac-chat-root {
+  position: fixed;
+  left: 0;
+  right: 0;
+  /* Follows the visual viewport (see platform/keyboardInsets.ts), so the header stays on screen
+     however the engine handles the keyboard. */
+  top: var(--nsac-vv-top, 0px);
+  height: var(--nsac-vv-height, 100%);
+  z-index: 10090;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Keyboard still covering the visible area: the footer sits on top of it. */
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), var(--nsac-ime-inset, 0px));
+  box-sizing: border-box;
+  overscroll-behavior: contain;
+}
+
+.nsac-chat-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  min-height: 64px;
+  padding: calc(env(safe-area-inset-top, 0px) + 6px) 8px 6px 4px;
+  box-sizing: border-box;
+  position: relative;
+  z-index: 3;
+}
+
+.nsac-chat-bar-swap {
+  animation: nsacChatBarSwap var(--m3-spring-default-effects-duration, 300ms) var(--m3-spring-default-effects, ease-out);
+}
+
+@keyframes nsacChatBarSwap {
+  from { opacity: 0; translate: 0 -8px; }
+}
+
+.nsac-chat-peer {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 8px 4px 4px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 150ms;
+}
+.nsac-chat-peer:active { background-color: color-mix(in srgb, currentColor 8%, transparent); }
+
+.nsac-chat-subtitle {
+  display: inline-flex;
+  align-items: baseline;
+  animation: nsacChatBarSwap 220ms ease-out;
+}
+
+.nsac-chat-ellipsis::after {
+  content: '…';
+  display: inline-block;
+  animation: nsacChatEllipsis 1.2s steps(4, end) infinite;
+  overflow: hidden;
+  vertical-align: bottom;
+  width: 0;
+}
+@keyframes nsacChatEllipsis { to { width: 1.1em; } }
+
+.nsac-chat-icon-btn {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 150ms, scale 200ms var(--m3-spring-fast-spatial, ease);
+}
+.nsac-chat-icon-btn:hover { background-color: color-mix(in srgb, currentColor 8%, transparent); }
+.nsac-chat-icon-btn:active { scale: 0.9; background-color: color-mix(in srgb, currentColor 12%, transparent); }
+.nsac-chat-icon-btn:disabled { opacity: 0.38; cursor: default; }
+
+.nsac-chat-icon-swap { animation: nsacChatIconSwap var(--m3-spring-fast-spatial-duration, 300ms) var(--m3-spring-fast-spatial, ease-out); }
+@keyframes nsacChatIconSwap { from { scale: 0.4; rotate: -90deg; opacity: 0; } }
+
+.nsac-chat-dropdown,
+.nsac-chat-notice {
+  animation: nsacChatPopIn var(--m3-spring-fast-spatial-duration, 300ms) var(--m3-spring-fast-spatial, ease-out);
+  transform-origin: top right;
+}
+
+.nsac-chat-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.nsac-chat-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+}
+
+.nsac-chat-column {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+.nsac-chat-scroll > .nsac-chat-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px 10px;
+}
+
+.nsac-chat-day {
+  position: sticky;
+  top: 6px;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+  margin: 14px 0 4px;
+  pointer-events: none;
+}
+.nsac-chat-day > span {
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.nsac-chat-bubble {
+  transition: scale 220ms var(--m3-spring-fast-spatial, ease), background-color 200ms;
+}
+.nsac-chat-bubble:active { scale: 0.98; }
+.nsac-chat-bubble.is-fresh {
+  animation: nsacChatBubbleIn var(--m3-spring-default-spatial-duration, 450ms) var(--m3-spring-default-spatial, ease-out) both;
+}
+@keyframes nsacChatBubbleIn {
+  from { opacity: 0; scale: 0.6; translate: 0 18px; }
+  40% { opacity: 1; }
+}
+.nsac-chat-bubble.is-flash { animation: nsacChatFlash 1.3s var(--m3-spring-slow-effects, ease-out); }
+@keyframes nsacChatFlash {
+  0%, 100% { filter: none; scale: 1; }
+  15% { filter: brightness(1.35) saturate(1.2); scale: 1.04; }
+  45% { filter: brightness(1.15); scale: 1; }
+}
+.nsac-chat-bubble.is-failed { opacity: 0.7; }
+.nsac-chat-bubble.is-emoji .nsac-chat-emoji-text { display: inline-block; }
+.nsac-chat-bubble.is-emoji.is-fresh .nsac-chat-emoji-text { animation: nsacChatEmojiIn 700ms var(--m3-spring-fast-spatial, ease-out); }
+@keyframes nsacChatEmojiIn {
+  0% { scale: 0.2; rotate: -25deg; }
+  60% { scale: 1.25; rotate: 8deg; }
+  100% { scale: 1; rotate: 0deg; }
+}
+
+.nsac-chat-quote { transition: filter 150ms; }
+.nsac-chat-quote:active { filter: brightness(0.92); }
+
+.nsac-chat-heart-burst {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  font-size: 2.6rem;
+  pointer-events: none;
+  translate: -50% -50%;
+  animation: nsacChatHeartBurst 900ms var(--m3-spring-fast-spatial, ease-out) forwards;
+  filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.25));
+}
+@keyframes nsacChatHeartBurst {
+  0% { scale: 0; opacity: 0; }
+  30% { scale: 1.3; opacity: 1; }
+  60% { scale: 1; opacity: 1; translate: -50% -60%; }
+  100% { scale: 1.1; opacity: 0; translate: -50% -140%; }
+}
+
+.nsac-chat-reaction {
+  animation: nsacChatPopIn var(--m3-spring-fast-spatial-duration, 300ms) var(--m3-spring-fast-spatial, ease-out);
+  transition: scale 160ms;
+}
+.nsac-chat-reaction:active { scale: 0.88; }
+@keyframes nsacChatPopIn { from { scale: 0.3; opacity: 0; } }
+
+.nsac-chat-reaction-pick {
+  animation: nsacChatPickIn var(--m3-spring-fast-spatial-duration, 300ms) var(--m3-spring-fast-spatial, ease-out) both;
+  transition: scale 200ms var(--m3-spring-fast-spatial, ease);
+}
+.nsac-chat-reaction-pick:hover { scale: 1.25; }
+.nsac-chat-reaction-pick:active { scale: 1.45; }
+@keyframes nsacChatPickIn { from { scale: 0; translate: 0 12px; opacity: 0; } }
+
+.nsac-chat-menu-item { transition: background-color 120ms; }
+.nsac-chat-menu-item:hover,
+.nsac-chat-menu-item:active { background-color: color-mix(in srgb, currentColor 8%, transparent) !important; }
+
+.nsac-chat-hover-actions { opacity: 0; transition: opacity 150ms; }
+.nsac-chat-hover-btn {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.nsac-chat-hover-btn:hover { background-color: color-mix(in srgb, currentColor 10%, transparent); }
+@media (hover: hover) and (pointer: fine) {
+  .nsac-chat-row:hover .nsac-chat-hover-actions { opacity: 1; }
+}
+@media not ((hover: hover) and (pointer: fine)) {
+  .nsac-chat-hover-actions { display: none !important; }
+}
+
+.nsac-chat-seen { animation: nsacChatBarSwap 260ms ease-out; }
+.nsac-chat-spin-slow { animation: nsacChatSpin 1.6s linear infinite; }
+@keyframes nsacChatSpin { to { rotate: 360deg; } }
+
+.nsac-chat-typing {
+  align-self: flex-start;
+  display: inline-flex;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 14px 16px;
+  border-radius: 22px 22px 22px 6px;
+  transform-origin: bottom left;
+  animation: nsacChatBubbleIn var(--m3-spring-default-spatial-duration, 450ms) var(--m3-spring-default-spatial, ease-out) both;
+}
+.nsac-chat-typing > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  opacity: 0.5;
+  animation: nsacChatTypingDot 1.2s ease-in-out infinite;
+}
+.nsac-chat-typing > span:nth-child(2) { animation-delay: 0.15s; }
+.nsac-chat-typing > span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes nsacChatTypingDot {
+  0%, 60%, 100% { translate: 0 0; opacity: 0.4; }
+  30% { translate: 0 -6px; opacity: 1; }
+}
+
+.nsac-chat-jump {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  z-index: 4;
+  width: 46px;
+  height: 46px;
+  border: none;
+  border-radius: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  scale: 0.4;
+  pointer-events: none;
+  transition:
+    opacity 150ms linear,
+    scale var(--m3-spring-fast-spatial-duration, 300ms) var(--m3-spring-fast-spatial, ease);
+}
+.nsac-chat-jump.is-visible { opacity: 1; scale: 1; pointer-events: auto; }
+.nsac-chat-jump-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  animation: nsacChatPopIn var(--m3-spring-fast-spatial-duration, 300ms) var(--m3-spring-fast-spatial, ease-out);
+}
+
+.nsac-chat-notice {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  translate: -50% 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(92%, 520px);
+  box-sizing: border-box;
+  padding: 10px 12px 10px 16px;
+  border-radius: 16px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  transform-origin: bottom center;
+}
+
+.nsac-chat-chip {
+  border: none;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.nsac-chat-empty { animation: nsacChatBarSwap 400ms ease-out; }
+.nsac-chat-starter {
+  animation: nsacChatPickIn var(--m3-spring-default-spatial-duration, 450ms) var(--m3-spring-default-spatial, ease-out) both;
+  transition: scale 200ms var(--m3-spring-fast-spatial, ease), background-color 150ms;
+}
+.nsac-chat-starter:active { scale: 0.94; }
+
+.nsac-chat-footer {
+  flex-shrink: 0;
+  padding: 8px 10px 10px;
+  position: relative;
+  z-index: 3;
+}
+
+.nsac-chat-send {
+  transition:
+    background-color 200ms,
+    color 200ms,
+    border-radius var(--m3-spring-fast-spatial-duration, 300ms) var(--m3-spring-fast-spatial, ease),
+    scale var(--m3-spring-fast-spatial-duration, 300ms) var(--m3-spring-fast-spatial, ease);
+  scale: 0.92;
+}
+.nsac-chat-send.is-ready { scale: 1; }
+.nsac-chat-send.is-ready:active { scale: 0.88; }
+
+.nsac-chat-emoji-key {
+  height: 42px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  font-size: 1.45rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: scale 180ms var(--m3-spring-fast-spatial, ease), background-color 120ms;
+}
+.nsac-chat-emoji-key:hover { background-color: color-mix(in srgb, currentColor 8%, transparent); }
+.nsac-chat-emoji-key:active { scale: 1.35; }
+
+.nsac-chat-text-btn {
+  border: none;
+  background: transparent;
+  padding: 10px 18px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nsac-chat-root *,
+  .nsac-chat-root *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}
+
+/* ------------------------------------------------------------------ Pushed page (Configurações) */
+/* Same surface model as the chat: above the top bar and bottom pill on mobile; on desktop it
+   covers the content area only, so the rail stays usable. */
+.nsac-pushed-page {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: var(--nsac-rail-offset, 0px);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: left 300ms var(--m3-spring-default-spatial, ease);
+}
+.nsac-pushed-page-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 64px;
+  padding: calc(env(safe-area-inset-top, 0px) + 6px) 16px 6px 6px;
+  box-sizing: border-box;
+}
+.nsac-pushed-page-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+.nsac-pushed-page-content {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 8px 12px calc(env(safe-area-inset-bottom, 0px) + 32px + var(--nsac-ime-height, 0px));
+  box-sizing: border-box;
+}
+
+/* ------------------------------------------------------------------ Chat: GIF explorer */
+.nsac-chat-tab {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  border: none;
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 200ms, color 200ms, scale 200ms var(--m3-spring-fast-spatial, ease);
+}
+.nsac-chat-tab:active { scale: 0.95; }
+.nsac-chat-panel-body { animation: nsacChatBarSwap 260ms ease-out; }
+.nsac-gif-chip-row {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+  min-height: 32px;
+}
+.nsac-gif-chip-row::-webkit-scrollbar { display: none; }
+.nsac-gif-chip { white-space: nowrap; animation: nsacChatPopIn var(--m3-spring-fast-spatial-duration, 300ms) var(--m3-spring-fast-spatial, ease-out); }
+.nsac-gif-tile {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  /* Pan gestures must reach the grid's scroller from anywhere on a tile. */
+  touch-action: pan-y;
+  contain: layout paint;
+  -webkit-tap-highlight-color: transparent;
+  animation: nsacChatPickIn var(--m3-spring-default-spatial-duration, 450ms) var(--m3-spring-default-spatial, ease-out) both;
+}
+@media (hover: hover) { .nsac-gif-tile:hover { filter: brightness(1.08); } }
+.nsac-chat-gif-btn { animation: nsacChatIconSwap var(--m3-spring-fast-spatial-duration, 300ms) var(--m3-spring-fast-spatial, ease-out); }
+
+
+/* ShimmerVeil `tile`: single-canvas Circle to Search look — frosted wash, 9 Monet/theme clouds
+   (32×40 buffer upscaled), pre-baked soft inner rainbow halo, and crisp evenodd-clipped rainbow
+   border rim in ONE canvas (zero CSS mask-composite, zero per-frame style recalcs). */
+.n2sac-veil--tile {
+  overflow: clip;
+  contain: strict;
+}
+.n2sac-veil__canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.n2sac-veil--tile .n2sac-veil__grain {
+  inset: 0;
+  opacity: 0.28;
+  mix-blend-mode: normal;
+  animation: none;
+  will-change: auto;
 }

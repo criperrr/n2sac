@@ -1,5 +1,5 @@
 const SERVER_VERSION_URL = 'https://notebook-server.tailddd6bf.ts.net/version.json';
-const GITHUB_RELEASES_URL = 'https://api.github.com/repos/criperrr/ultimate-gemilona/releases/latest';
+const GITHUB_RELEASES_URL = 'https://api.github.com/repos/criperrr/n2sac/releases/latest';
 const BUILD_ID_KEY = 'n2sac_update_build_id';
 const OTA_VERSION_KEY = 'n2sac_update_ota_version_v2';
 const NATIVE_VERSION_KEY = 'n2sac_update_native_version';

@@ -4,6 +4,7 @@ import {
   CalendarClock,
   Trophy,
   Bell,
+  Megaphone,
   User,
   RefreshCw,
   LogOut,
@@ -21,14 +22,14 @@ import { RefreshCooldownLabel } from './PollCountdown';
 
 const RAIL_COLLAPSED_KEY = 'nsac_rail_collapsed';
 
-export type AppTabId = 'boletim' | 'ranking' | 'frequencia' | 'sentinela' | 'profile' | 'settings';
+export type AppTabId = 'boletim' | 'turma' | 'ranking' | 'frequencia' | 'sentinela' | 'profile' | 'settings';
 
 interface NavTabItem {
   id: AppTabId;
   label: string;
   shortLabel: string;
   icon: React.ReactNode;
-  /** Mobile bottom bar shows only primary destinations; Settings opens from the top bar. */
+  /** Mobile bottom bar shows only primary destinations; Settings & Sentinela open from top bar. */
   inBottomBar: boolean;
 }
 
@@ -38,6 +39,13 @@ export const NAV_TABS: NavTabItem[] = [
     label: 'Boletim',
     shortLabel: 'Boletim',
     icon: <GraduationCap size={20} />,
+    inBottomBar: true,
+  },
+  {
+    id: 'turma',
+    label: 'Canais da Turma',
+    shortLabel: 'Turma',
+    icon: <Megaphone size={20} />,
     inBottomBar: true,
   },
   {
@@ -55,18 +63,18 @@ export const NAV_TABS: NavTabItem[] = [
     inBottomBar: true,
   },
   {
-    id: 'sentinela',
-    label: 'Alertas & Conta',
-    shortLabel: 'Alertas',
-    icon: <Bell size={20} />,
-    inBottomBar: true,
-  },
-  {
     id: 'profile',
     label: 'Perfil',
     shortLabel: 'Perfil',
     icon: <User size={20} />,
     inBottomBar: true,
+  },
+  {
+    id: 'sentinela',
+    label: 'Alertas & Sentinela',
+    shortLabel: 'Alertas',
+    icon: <Bell size={20} />,
+    inBottomBar: false,
   },
   {
     id: 'settings',
@@ -477,6 +485,28 @@ export const ExpressiveNavigationShell: React.FC<{
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => onSelectTab('sentinela')}
+              title="Alertas & Sentinela"
+              aria-label="Alertas & Sentinela"
+              aria-pressed={activeTab === 'sentinela'}
+              className="mobile-only-btn"
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 999,
+                border: `1px solid ${activeTab === 'sentinela' ? tokens.primary : tokens.outlineVariant}`,
+                backgroundColor: activeTab === 'sentinela' ? tokens.secondaryContainer : tokens.surfaceContainerHigh,
+                color: activeTab === 'sentinela' ? tokens.onSecondaryContainer : tokens.onSurface,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+              }}
+            >
+              <Bell size={16} />
+            </button>
             <button
               type="button"
               onClick={() => onSelectTab('settings')}

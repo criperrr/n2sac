@@ -15,6 +15,7 @@ use crate::db::{AccountRepo, AuthRepo, BoletimRepo, RankingRepo, SentinelRepo, S
 use crate::error::ServerError;
 use crate::fcm::FcmClient;
 use crate::ports::{Clock, HeuristicObserver, SystemClock};
+use crate::realtime::ClassroomRealtimeHub;
 use crate::sentinel::SentinelHeuristic;
 
 #[derive(Clone)]
@@ -148,12 +149,17 @@ pub struct CachedServiceClient {
     pub active: bool,
 }
 
+/// How long a typing ping keeps the "digitando…" indicator on.
+pub const CHAT_TYPING_TTL_SECS: u64 = 6;
+
 #[derive(Clone)]
 pub struct AppCaches {
     pub boletim: Cache<i64, CachedBoletim>,
     pub snapshots: Cache<(i64, String), CachedSnapshot>,
     pub user_sessions: Cache<String, CachedUserSession>,
     pub service_clients: Cache<String, CachedServiceClient>,
+    /// `(typer, peer)` pairs that sent a chat typing ping in the last few seconds.
+    pub chat_typing: Cache<(i64, i64), ()>,
     auth_cache_enabled: bool,
 }
 
@@ -182,11 +188,17 @@ impl AppCaches {
             .time_to_live(Duration::from_secs(auth_ttl))
             .build();
 
+        let chat_typing = Cache::builder()
+            .max_capacity(4_000)
+            .time_to_live(Duration::from_secs(CHAT_TYPING_TTL_SECS))
+            .build();
+
         Self {
             boletim,
             snapshots,
             user_sessions,
             service_clients,
+            chat_typing,
             auth_cache_enabled: auth_ttl > 0,
         }
     }
@@ -274,6 +286,7 @@ pub struct AppState {
     pub heuristic: Arc<dyn HeuristicObserver>,
     pub caches: AppCaches,
     pub semaphore: NsacSemaphore,
+    pub realtime: ClassroomRealtimeHub,
 }
 
 impl AppState {
@@ -302,6 +315,7 @@ impl AppState {
             heuristic,
             caches,
             semaphore,
+            realtime: ClassroomRealtimeHub::new(),
         })
     }
 
@@ -339,5 +353,17 @@ impl AppState {
 
     pub fn social(&self) -> SocialRepo {
         SocialRepo::new(self.db.clone())
+    }
+
+    pub fn moderation(&self) -> crate::db::ModerationRepo {
+        crate::db::ModerationRepo::new(self.db.clone())
+    }
+
+    pub fn feedback(&self) -> crate::db::FeedbackRepo {
+        crate::db::FeedbackRepo::new(self.db.clone())
+    }
+
+    pub fn classrooms(&self) -> crate::db::classrooms::ClassroomsRepo {
+        crate::db::classrooms::ClassroomsRepo::new(self.db.clone())
     }
 }

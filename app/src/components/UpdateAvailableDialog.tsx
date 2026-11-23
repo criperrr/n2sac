@@ -23,13 +23,13 @@ export const UpdateAvailableDialog: React.FC<{
 }> = ({ update, onDismiss }) => {
   const { tokens, isMaterialYou } = useM3Theme();
   const [applying, setApplying] = useState(false);
-  const [apkState, setApkState] = useState<ApkDownloadState>('idle');
-  const [apkProgress, setApkProgress] = useState(0);
+  const [apkState, setApkState] = useState<ApkDownloadState>(update.cachedReady ? 'ready' : 'idle');
+  const [apkProgress, setApkProgress] = useState(update.cachedReady ? 100 : 0);
   const [apkError, setApkError] = useState<string | null>(null);
   const blobUrlRef = useRef<string | null>(null);
 
   const isOta = update.source === 'server-ota';
-  const isServerApk = update.source === 'server-apk';
+  const isNativeApk = !isOta && hasNativeApkUpdater();
   const notes = update.notes.trim();
 
   useEffect(() => {
@@ -62,7 +62,7 @@ export const UpdateAvailableDialog: React.FC<{
     setApkProgress(0);
     setApkState('downloading');
 
-    if (hasNativeApkUpdater() && startNativeApkDownload(update.downloadUrl)) {
+    if (hasNativeApkUpdater() && startNativeApkDownload(update.downloadUrl, update.apkSha256 ?? '', update.version)) {
       return;
     }
 
@@ -158,8 +158,8 @@ export const UpdateAvailableDialog: React.FC<{
               {isOta
                 ? 'Leva só alguns segundos: o app recarrega já atualizado, sem reinstalar.'
                 : apkState === 'ready'
-                  ? 'Download concluído! Toque em Instalar para atualizar o aplicativo.'
-                  : 'Baixe e instale a nova versão do aplicativo para receber as melhorias nativas.'}
+                  ? 'Download verificado (SHA-256) e pronto! Toque em Instalar para atualizar o aplicativo.'
+                  : 'Baixe e instale a nova versão do aplicativo em segundo plano (com verificação SHA-256).'}
               {notes && !isOta && (
                 <div style={{ marginTop: 6, color: tokens.onSurface, whiteSpace: 'pre-line' }}>{notes}</div>
               )}
@@ -169,7 +169,7 @@ export const UpdateAvailableDialog: React.FC<{
             </div>
           </div>
 
-          {isServerApk && (apkState === 'downloading' || apkState === 'ready') && (
+          {isNativeApk && (apkState === 'downloading' || apkState === 'ready') && (
             <div style={{ marginTop: 14 }}>
               <div
                 style={{
@@ -232,7 +232,7 @@ export const UpdateAvailableDialog: React.FC<{
               >
                 {applying ? 'Atualizando…' : 'Atualizar agora'}
               </EnhancedMorphButton>
-            ) : isServerApk && hasNativeApkUpdater() ? (
+            ) : isNativeApk ? (
               apkState === 'ready' ? (
                 <EnhancedMorphButton
                   size="sm"

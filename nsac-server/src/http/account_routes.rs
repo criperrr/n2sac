@@ -114,6 +114,90 @@ pub async fn put_fcm_token(
     Ok(ok_json(AccountProfileResponse::from(refreshed)))
 }
 
+pub async fn delete_fcm_token(
+    State(state): State<AppState>,
+    DualAuth(principal): DualAuth,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Response, ServerError> {
+    let pairs = parse_query_pairs(raw_query.as_deref());
+    let target_query = parse_target_query(&pairs)?;
+    let target = resolve_target_account(
+        &state,
+        &principal,
+        SCOPE_NSAC_WRITE,
+        target_query.account_id,
+        target_query.discord_id.as_deref(),
+    )
+    .await?;
+
+    let now = state.clock.now();
+    state
+        .accounts()
+        .update_fcm_token(target.account_id, None, now)
+        .await?;
+
+    let refreshed = state
+        .accounts()
+        .find_by_id(target.account_id)
+        .await?
+        .ok_or_else(|| ServerError::user_not_linked("Conta alvo não encontrada."))?;
+
+    Ok(ok_json(AccountProfileResponse::from(refreshed)))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateNotificationPreferencesRequest {
+    #[serde(default)]
+    pub grades_enabled: Option<bool>,
+    #[serde(default)]
+    pub announcements_enabled: Option<bool>,
+    #[serde(default)]
+    pub social_enabled: Option<bool>,
+    #[serde(default)]
+    pub room_chat_mode: Option<String>,
+    #[serde(default)]
+    pub room_offtopic_mode: Option<String>,
+}
+
+pub async fn get_notification_preferences(
+    State(state): State<AppState>,
+    DualAuth(principal): DualAuth,
+) -> Result<Response, ServerError> {
+    let account_id = match principal {
+        crate::auth::Principal::User(u) => u.account_id,
+        crate::auth::Principal::Service(_) => {
+            return Err(ServerError::unauthorized("User session required"));
+        }
+    };
+    let prefs = state.classrooms().get_notification_preferences(account_id).await?;
+    Ok(ok_json(prefs))
+}
+
+pub async fn put_notification_preferences(
+    State(state): State<AppState>,
+    DualAuth(principal): DualAuth,
+    AppJson(body): AppJson<UpdateNotificationPreferencesRequest>,
+) -> Result<Response, ServerError> {
+    let account_id = match principal {
+        crate::auth::Principal::User(u) => u.account_id,
+        crate::auth::Principal::Service(_) => {
+            return Err(ServerError::unauthorized("User session required"));
+        }
+    };
+    let prefs = state
+        .classrooms()
+        .update_notification_preferences(
+            account_id,
+            body.grades_enabled,
+            body.announcements_enabled,
+            body.social_enabled,
+            body.room_chat_mode.as_deref(),
+            body.room_offtopic_mode.as_deref(),
+        )
+        .await?;
+    Ok(ok_json(prefs))
+}
+
 pub async fn put_discord_link(
     State(state): State<AppState>,
     DualAuth(principal): DualAuth,

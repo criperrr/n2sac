@@ -173,3 +173,58 @@ export function animateSharedAxisX(
     el.animate([{ translate: `${from}px 0` }, { translate: `${to}px 0` }], { ...timing, fill }),
   ];
 }
+
+/**
+ * Overlay page transition matching Android's predictive-back exit (`backStack.ts`) and its exact
+ * inverse on enter: the incoming page slides in from the right (`30vw`, `scale(0.88)`, `28px`
+ * rounded corners, elevation shadow) and expands to cover the current page underneath.
+ */
+export function animateOverlayPageTransition(el: HTMLElement, role: 'enter' | 'leave'): Animation {
+  el.style.transformOrigin = 'center center';
+  const shift = `${Math.round((typeof window !== 'undefined' ? window.innerWidth : 400) * 0.3)}px`;
+
+  if (role === 'enter') {
+    const spatial = el.animate(
+      [
+        {
+          transform: `translate3d(${shift}, 0, 0) scale(0.88)`,
+          borderRadius: '28px',
+          boxShadow: '0 18px 48px rgba(0, 0, 0, 0.35)',
+        },
+        {
+          transform: 'translate3d(0, 0, 0) scale(1)',
+          borderRadius: '0px',
+          boxShadow: '0 0 0 rgba(0, 0, 0, 0)',
+        },
+      ],
+      { duration: 360, easing: EASING.emphasizedDecelerate, fill: 'backwards' }
+    );
+    el.animate(
+      [
+        { opacity: 0, offset: 0 },
+        { opacity: 1, offset: 0.32 },
+        { opacity: 1, offset: 1 },
+      ],
+      { duration: 360, easing: EASING.linear, fill: 'backwards' }
+    );
+    return spatial;
+  }
+
+  return el.animate(
+    [
+      {
+        transform: 'translate3d(0, 0, 0) scale(1)',
+        borderRadius: '0px',
+        boxShadow: '0 0 0 rgba(0, 0, 0, 0)',
+        opacity: 1,
+      },
+      {
+        transform: `translate3d(${shift}, 0, 0) scale(0.88)`,
+        borderRadius: '28px',
+        boxShadow: '0 18px 48px rgba(0, 0, 0, 0.35)',
+        opacity: 0,
+      },
+    ],
+    { duration: 240, easing: 'cubic-bezier(0.1, 0.1, 0, 1)', fill: 'forwards' }
+  );
+}

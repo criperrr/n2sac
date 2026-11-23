@@ -11,7 +11,10 @@ import { PrivacyToggle } from './PrivacyToggle';
  * - "Ser encontrado na busca": findable by name/e-mail even without showing the name in the ranking.
  * - "Modo invisível": never exposed anywhere — leaves the ranking, search, photo and public profile.
  */
-export const PrivacySettingsCard: React.FC<{ token: string }> = ({ token }) => {
+export const PrivacySettingsCard: React.FC<{ token: string; refreshSignal?: number }> = ({
+  token,
+  refreshSignal = 0,
+}) => {
   const { tokens } = useM3Theme();
   const [prefs, setPrefs] = useState<RankingPreferences | null>(null);
   const [saving, setSaving] = useState(false);
@@ -25,7 +28,7 @@ export const PrivacySettingsCard: React.FC<{ token: string }> = ({ token }) => {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, refreshSignal]);
 
   const save = async (patch: { discoverable?: boolean; invisible?: boolean }) => {
     setSaving(true);

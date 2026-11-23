@@ -37,6 +37,7 @@ import {
 import { useBackLayer } from '../navigation/backStack';
 import { MorphingLoadingState } from '../components/expressive/ShapeMorph';
 import { Expandable } from '../components/expressive/Expandable';
+import { GradeRevealScore } from '../components/GradeRevealScore';
 
 type BimesterViewMode = 'overview' | '1' | '2' | '3' | '4' | 'compare' | 'recovery';
 type BoletimLayoutMode = 'table' | 'cards' | 'grid' | 'comparative';
@@ -218,7 +219,7 @@ export function isBimesterPosted(bi: UnifiedBimesterData): boolean {
   return true;
 }
 
-function normalizeYearInfo(yr: YearInfo): YearInfo {
+export function normalizeYearInfo(yr: YearInfo): YearInfo {
   return {
     ...yr,
     grades: yr.grades.map((subj) => {
@@ -248,11 +249,19 @@ function normalizeYearInfo(yr: YearInfo): YearInfo {
   };
 }
 
+function formatShortYearPill(y: YearInfo): string {
+  const seriesMatch = y.title.match(/([1-4])\s*[º°]/i) ?? y.title.match(/\b[A-Z]{2,4}([1-4])\b/i);
+  if (seriesMatch?.[1]) {
+    return `${y.year} • ${seriesMatch[1]}º Ano`;
+  }
+  return String(y.year);
+}
+
 function formatPtBr(num: number, decimals: number): string {
   return num.toFixed(decimals).replace('.', ',');
 }
 
-function analyzeSubject(
+export function analyzeSubject(
   subject: FullGrades,
   yearTotalAbsences: number,
   yearStatus: string
@@ -955,17 +964,20 @@ export const BoletimScreen: React.FC<{
             </div>
           </div>
 
-          {/* School Year Connected Pill Selector */}
+          {/* School Year Connected Pill Selector (concise year + series, no redundant course name) */}
           {years.length > 1 && (
-            <EnhancedConnectedButtonGroup
-              scrollable={false}
-              value={activeYear.year}
-              onChange={(yr) => setSelectedYearNum(Number(yr))}
-              options={years.map((y) => ({
-                value: y.year,
-                label: `${y.year} (${y.title})`,
-              }))}
-            />
+            <div style={{ maxWidth: '100%', minWidth: 0 }}>
+              <EnhancedConnectedButtonGroup
+                wrap={true}
+                scrollable={false}
+                value={activeYear.year}
+                onChange={(yr) => setSelectedYearNum(Number(yr))}
+                options={years.map((y) => ({
+                  value: y.year,
+                  label: formatShortYearPill(y),
+                }))}
+              />
+            </div>
           )}
         </div>
 
@@ -2942,18 +2954,28 @@ const SubjectSegmentedRow: React.FC<{
           </div>
         </div>
 
-        {/* Center/Right: 4 Bimester Pills or Single Bimester Comparison */}
+        {/* Center/Right: Bimester Pills (full-width balanced grid on mobile, compact on desktop) */}
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 12,
-            flex: '1 1 320px',
-            justifyContent: 'flex-end',
+            gap: 8,
+            flex: '1 1 260px',
+            width: '100%',
+            minWidth: 0,
+            justifyContent: targetBiNum === null ? 'space-between' : 'flex-end',
           }}
         >
           {targetBiNum === null ? (
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: `repeat(${Math.max(1, subject.bimesters.length)}, minmax(0, 1fr))`,
+                gap: 6,
+                flex: 1,
+                minWidth: 0,
+              }}
+            >
               {subject.bimesters.map((bi) => {
                 const bc = getGradeBadgeColors(
                   bi.personal.grade,
@@ -2964,8 +2986,8 @@ const SubjectSegmentedRow: React.FC<{
                   <div
                     key={bi.bimester}
                     style={{
-                      minWidth: 62,
-                      padding: '6px 9px',
+                      minWidth: 0,
+                      padding: '6px 6px',
                       borderRadius: 14,
                       backgroundColor: bc.bg,
                       color: bc.fg,
@@ -2990,7 +3012,7 @@ const SubjectSegmentedRow: React.FC<{
                         '—'
                       )}
                     </span>
-                    <span style={{ fontSize: '0.62rem', opacity: 0.78 }}>
+                    <span style={{ fontSize: '0.61rem', opacity: 0.78, whiteSpace: 'nowrap' }}>
                       M.T. {bi.class.averageGrade !== null ? bi.class.averageGrade.toFixed(1) : '—'}
                     </span>
                   </div>
@@ -3408,13 +3430,158 @@ const ComparativeXRayView: React.FC<{
  * Rendered via `createPortal(..., document.body)` so it is NEVER trapped inside
  * any transformed parent container and always centers cleanly in the viewport.
  */
-const SubjectDetailsModal: React.FC<{
+export interface SubjectNewGradeBanner {
+  bimester: number;
+  personalGrade: number | null;
+  classAverage: number | null;
+  previousGrade: number | null;
+  eyebrow?: string;
+  headline?: string;
+  allSubjects?: { subject: string; bimester: number; personal_grade: number | null }[];
+  onSelectSubject?: (subject: string, bimester: number) => void;
+}
+
+export const SubjectEvolutionMiniChart: React.FC<{
+  bimesters: UnifiedBimesterData[];
+  highlightBimester?: number | null;
+}> = ({ bimesters, highlightBimester = null }) => {
+  const { tokens } = useM3Theme();
+  const sorted = [...bimesters].sort((a, b) => a.bimester - b.bimester);
+  const postedAny = sorted.some((b) => b.personal.grade !== null || b.class.averageGrade !== null);
+  if (!postedAny) return null;
+
+  const width = 320;
+  const height = 116;
+  const padL = 24;
+  const padR = 16;
+  const padT = 14;
+  const padB = 22;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+
+  const xOf = (idx: number) => padL + (sorted.length > 1 ? (idx / (sorted.length - 1)) * plotW : plotW / 2);
+  const yOf = (val: number) => padT + (1 - Math.max(0, Math.min(10, val)) / 10) * plotH;
+
+  const personalPts = sorted
+    .map((b, i) => (b.personal.grade !== null ? { x: xOf(i), y: yOf(b.personal.grade), val: b.personal.grade, bi: b.bimester } : null))
+    .filter((p): p is { x: number; y: number; val: number; bi: number } => p !== null);
+  const classPts = sorted
+    .map((b, i) => (b.class.averageGrade !== null ? { x: xOf(i), y: yOf(b.class.averageGrade), val: b.class.averageGrade, bi: b.bimester } : null))
+    .filter((p): p is { x: number; y: number; val: number; bi: number } => p !== null);
+
+  const linePath = (pts: { x: number; y: number }[]) =>
+    pts.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+
+  return (
+    <div
+      style={{
+        padding: '12px 14px 10px',
+        borderRadius: 18,
+        backgroundColor: tokens.surfaceContainerHigh,
+        border: `1px solid ${tokens.outlineVariant}`,
+        marginBottom: 16,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: '0.74rem', fontWeight: 800, color: tokens.onSurface, textTransform: 'uppercase', letterSpacing: '0.02em' }}>
+          Evolução Bimestral
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: '0.7rem', color: tokens.onSurfaceVariant, fontWeight: 700 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ width: 8, height: 8, borderRadius: 99, backgroundColor: tokens.primary }} /> Sua nota
+          </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ width: 8, height: 8, borderRadius: 99, backgroundColor: tokens.outline }} /> Sala (M.T.)
+          </span>
+        </div>
+      </div>
+
+      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block', overflow: 'visible' }}>
+        {[0, 6, 10].map((tick) => {
+          const y = yOf(tick);
+          return (
+            <g key={tick}>
+              <line
+                x1={padL}
+                x2={width - padR}
+                y1={y}
+                y2={y}
+                stroke={tick === 6 ? tokens.gradeWarning : tokens.outlineVariant}
+                strokeWidth={tick === 6 ? 1.1 : 0.7}
+                strokeDasharray={tick === 6 ? '4 3' : undefined}
+                opacity={tick === 6 ? 0.75 : 0.5}
+              />
+              <text
+                x={padL - 5}
+                y={y + 3}
+                textAnchor="end"
+                fontSize="9"
+                fill={tick === 6 ? tokens.gradeWarning : tokens.onSurfaceVariant}
+                fontWeight={tick === 6 ? 800 : 600}
+              >
+                {tick}
+              </text>
+            </g>
+          );
+        })}
+
+        {classPts.length >= 2 && (
+          <path d={linePath(classPts)} fill="none" stroke={tokens.outline} strokeWidth={2} strokeDasharray="4 3" strokeLinecap="round" />
+        )}
+        {personalPts.length >= 2 && (
+          <path d={linePath(personalPts)} fill="none" stroke={tokens.primary} strokeWidth={2.8} strokeLinecap="round" strokeLinejoin="round" />
+        )}
+
+        {classPts.map((p) => (
+          <circle key={`c-${p.bi}`} cx={p.x} cy={p.y} r={3} fill={tokens.surfaceContainerHigh} stroke={tokens.outline} strokeWidth={1.8} />
+        ))}
+
+        {personalPts.map((p) => {
+          const isNew = highlightBimester === p.bi;
+          return (
+            <g key={`p-${p.bi}`}>
+              {isNew && <circle cx={p.x} cy={p.y} r={8} fill={tokens.primary} opacity={0.22} />}
+              <circle cx={p.x} cy={p.y} r={isNew ? 4.8 : 3.8} fill={tokens.primary} stroke={tokens.surfaceContainerHigh} strokeWidth={1.8} />
+              <text
+                x={p.x}
+                y={p.y - 8}
+                textAnchor="middle"
+                fontSize="9.5"
+                fontWeight={800}
+                fill={tokens.onSurface}
+              >
+                {formatPtBr(p.val, 1)}
+              </text>
+            </g>
+          );
+        })}
+
+        {sorted.map((b, i) => (
+          <text
+            key={`lbl-${b.bimester}`}
+            x={xOf(i)}
+            y={height - 4}
+            textAnchor="middle"
+            fontSize="9.5"
+            fontWeight={highlightBimester === b.bimester ? 800 : 600}
+            fill={highlightBimester === b.bimester ? tokens.primary : tokens.onSurfaceVariant}
+          >
+            {b.bimester}º Bim
+          </text>
+        ))}
+      </svg>
+    </div>
+  );
+};
+
+export const SubjectDetailsModal: React.FC<{
   analysis: SubjectAcademicAnalysis;
   classCode: string;
   year: number;
   originEl: HTMLElement | null;
   onClose: () => void;
-}> = ({ analysis, classCode, year, originEl, onClose }) => {
+  newGradeBanner?: SubjectNewGradeBanner | null;
+}> = ({ analysis, classCode, year, originEl, onClose, newGradeBanner = null }) => {
   const { tokens } = useM3Theme();
   const { subject } = analysis;
   const goalPositive = analysis.goalStatus === 'passed_24' || analysis.goalStatus === 'completed_pass';
@@ -3425,16 +3592,131 @@ const SubjectDetailsModal: React.FC<{
       ? tokens.onErrorContainer
       : tokens.onGradeWarningContainer;
 
+  const bannerBimesterData = newGradeBanner
+    ? subject.bimesters.find((b) => b.bimester === newGradeBanner.bimester) ?? null
+    : null;
+  const bannerGrade = newGradeBanner?.personalGrade ?? bannerBimesterData?.personal.grade ?? analysis.latestGrade;
+  const bannerClassAvg = newGradeBanner?.classAverage ?? bannerBimesterData?.class.averageGrade ?? analysis.classAvg;
+  const bannerPrevGrade = newGradeBanner?.previousGrade ?? analysis.previousGrade;
+  const bannerDiffClass =
+    bannerGrade !== null && bannerClassAvg !== null ? bannerGrade - bannerClassAvg : null;
+  const bannerEvolution =
+    bannerGrade !== null && bannerPrevGrade !== null ? bannerGrade - bannerPrevGrade : null;
+
   return (
     <ExpressiveModal ariaLabel={`Detalhes de ${subject.subjectName}`} onClose={onClose} originEl={originEl}>
       {(close) => (
       <>
         <ModalHeader
           icon={renderSubjectIcon(subject.subjectName, 21)}
-          eyebrow={`${classCode} • Ano Letivo ${year}`}
+          eyebrow={
+            newGradeBanner
+              ? newGradeBanner.eyebrow || `Nova nota lançada • ${classCode} • ${year}`
+              : `${classCode} • Ano Letivo ${year}`
+          }
           title={subject.subjectName}
           onClose={() => close()}
         />
+
+        {newGradeBanner && (
+          <div
+            style={{
+              marginTop: 14,
+              padding: '14px 16px',
+              borderRadius: 20,
+              backgroundColor: tokens.primaryContainer,
+              color: tokens.onPrimaryContainer,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+            }}
+          >
+            {newGradeBanner.headline && (
+              <div style={{ fontSize: '0.8rem', fontWeight: 700, opacity: 0.92 }}>
+                {newGradeBanner.headline}
+              </div>
+            )}
+            {newGradeBanner.allSubjects && newGradeBanner.allSubjects.length > 1 && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {newGradeBanner.allSubjects.map((item) => {
+                  const active =
+                    stripAccents(item.subject) === stripAccents(subject.subjectName) &&
+                    item.bimester === newGradeBanner.bimester;
+                  return (
+                    <button
+                      key={`${item.subject}-${item.bimester}`}
+                      type="button"
+                      onClick={() => newGradeBanner.onSelectSubject?.(item.subject, item.bimester)}
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: 999,
+                        border: 'none',
+                        backgroundColor: active ? tokens.primary : 'rgba(0,0,0,0.14)',
+                        color: active ? tokens.onPrimary : tokens.onPrimaryContainer,
+                        fontSize: '0.74rem',
+                        fontWeight: 800,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {item.subject}
+                      {item.personal_grade !== null ? `: ${formatPtBr(item.personal_grade, 1)}` : ''}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <div>
+                <div style={{ fontSize: '0.72rem', fontWeight: 800, textTransform: 'uppercase', opacity: 0.85 }}>
+                  {newGradeBanner.bimester}º Bimestre • Nova Nota
+                </div>
+                <div style={{ marginTop: 2 }}>
+                  <GradeRevealScore target={bannerGrade} phase="counting" size="hero" />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
+                {bannerDiffClass !== null && (
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                      padding: '4px 10px',
+                      borderRadius: 999,
+                      backgroundColor: 'rgba(0,0,0,0.14)',
+                      fontSize: '0.74rem',
+                      fontWeight: 800,
+                    }}
+                  >
+                    <Users size={12} /> Sala {formatPtBr(bannerClassAvg!, 1)} ({bannerDiffClass >= 0 ? '+' : ''}
+                    {formatPtBr(bannerDiffClass, 1)})
+                  </span>
+                )}
+                {bannerEvolution !== null && (
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                      padding: '4px 10px',
+                      borderRadius: 999,
+                      backgroundColor: 'rgba(0,0,0,0.14)',
+                      fontSize: '0.74rem',
+                      fontWeight: 800,
+                    }}
+                  >
+                    {bannerEvolution >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
+                    Evolução: {formatPtBr(bannerPrevGrade!, 1)} → {formatPtBr(bannerGrade!, 1)} (
+                    {bannerEvolution >= 0 ? '+' : ''}
+                    {formatPtBr(bannerEvolution, 1)})
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Summary Metrics Grid: Média, Soma de Pontos / 24, Meta p/ Aprovação Direta, Total de Faltas */}
         <div
@@ -3501,6 +3783,12 @@ const SubjectDetailsModal: React.FC<{
           />
         </div>
 
+        {/* Bimester Evolution Sparkline Chart */}
+        <SubjectEvolutionMiniChart
+          bimesters={subject.bimesters}
+          highlightBimester={newGradeBanner?.bimester ?? null}
+        />
+
         {/* 4 Bimesters Segmented Breakdown */}
         <div style={{ fontSize: '0.78rem', fontWeight: 800, color: tokens.primary, marginBottom: 10, textTransform: 'uppercase' }}>
           Desempenho Detalhado nos 4 Bimestres (Sua Nota M.B. vs Média da Sala M.T.)
@@ -3513,12 +3801,14 @@ const SubjectDetailsModal: React.FC<{
             const diff = pGrade !== null && cGrade !== null ? pGrade - cGrade : null;
             const recCode = bi.personal.recoveryCode ?? 'NAC';
             const recMsg = bi.personal.recoveryMessage ?? 'Não Aconteceu';
+            const isHighlightedNew = newGradeBanner?.bimester === bi.bimester;
 
             return (
               <ExpressiveSegmentedCard
                 key={bi.bimester}
                 index={idx}
                 total={subject.bimesters.length}
+                selected={isHighlightedNew}
                 style={{ padding: '16px 18px' }}
               >
                 <div
@@ -3531,11 +3821,26 @@ const SubjectDetailsModal: React.FC<{
                     marginBottom: 10,
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     <Calendar size={18} color={tokens.primary} />
                     <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: '1.05rem' }}>
                       {bi.bimester}º Bimestre
                     </span>
+                    {isHighlightedNew && (
+                      <span
+                        style={{
+                          padding: '2px 9px',
+                          borderRadius: 999,
+                          fontSize: '0.68rem',
+                          fontWeight: 800,
+                          backgroundColor: tokens.primary,
+                          color: tokens.onPrimary,
+                          letterSpacing: '0.03em',
+                        }}
+                      >
+                        NOVA NOTA
+                      </span>
+                    )}
                     <span
                       style={{
                         padding: '2px 9px',

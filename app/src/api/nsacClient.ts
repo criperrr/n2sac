@@ -7,6 +7,7 @@ import type {
   BoletimApiQueryParams,
   CachedResource,
   ComparisonSummaryResponse,
+  ChatMessage,
   ConversationMessagesPayload,
   FichaAvaliacaoEntry,
   FollowMutationResult,
@@ -441,6 +442,34 @@ export interface UserProfileData {
   bio: string | null;
   avatar_data_url: string | null;
   banner_data_url: string | null;
+  /** Active community-moderation restrictions (absent on older servers). */
+  restrictions?: ModerationRestriction[];
+}
+
+export type ReportKind = 'media' | 'text';
+
+export interface ModerationRestriction {
+  kind: ReportKind;
+  /** ISO date; null when permanent. */
+  until: string | null;
+  permanent: boolean;
+}
+
+/** Anonymous report of someone's profile photo/banner (`media`) or name/bio (`text`). */
+export async function reportProfile(
+  token: string,
+  accountId: number,
+  kind: ReportKind
+): Promise<'received' | 'already_reported' | 'actioned'> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/profiles/${accountId}/report`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind }),
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<{ outcome: 'received' | 'already_reported' | 'actioned' }>;
+  return env.data.outcome;
 }
 
 const USER_PROFILE_CACHE_PREFIX = 'nsac_user_profile_v1_';
@@ -509,13 +538,11 @@ export async function updateUserProfile(
     },
     body: JSON.stringify(payload),
   });
-  const body = (await res.json()) as { success?: boolean; data?: UserProfileData; error?: { code?: string; message?: string } };
-  if (!res.ok || !body?.success || !body.data) {
-    throw new NsacApiClientError(
-      body?.error?.code ?? 'PROFILE_ERROR',
-      body?.error?.message ?? 'Não foi possível salvar o perfil.',
-      res.status
-    );
+  // Server rejections (moderation restriction, invalid image) carry a user-facing message.
+  if (!res.ok) throw await parseErrorResponse(res);
+  const body = (await res.json()) as { success?: boolean; data?: UserProfileData };
+  if (!body?.success || !body.data) {
+    throw new NsacApiClientError('PROFILE_ERROR', 'Não foi possível salvar o perfil.', res.status);
   }
   saveCachedUserProfile(body.data);
   return body.data;
@@ -776,11 +803,13 @@ export async function unblockStudent(token: string, accountId: number): Promise<
 export async function fetchConversationMessages(
   token: string,
   peerId: number,
-  options?: { afterId?: number; limit?: number; signal?: AbortSignal }
+  options?: { afterId?: number; beforeId?: number; afterRev?: number; limit?: number; signal?: AbortSignal }
 ): Promise<ConversationMessagesPayload> {
   const base = getApiBaseUrl();
   const params = new URLSearchParams();
   if (options?.afterId) params.set('after_id', String(options.afterId));
+  if (options?.beforeId) params.set('before_id', String(options.beforeId));
+  if (options?.afterRev !== undefined) params.set('after_rev', String(options.afterRev));
   if (options?.limit) params.set('limit', String(options.limit));
   const qs = params.toString();
   const res = await fetch(`${base}/api/v1/social/conversations/${peerId}/messages${qs ? `?${qs}` : ''}`, {
@@ -796,13 +825,14 @@ export async function fetchConversationMessages(
 export async function sendConversationMessage(
   token: string,
   peerId: number,
-  text: string
+  text: string,
+  replyToId?: number | null
 ): Promise<SendMessagePayload> {
   const base = getApiBaseUrl();
   const res = await fetch(`${base}/api/v1/social/conversations/${peerId}/messages`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(replyToId ? { text, reply_to_id: replyToId } : { text }),
   });
   if (!res.ok) throw await parseErrorResponse(res);
   const env = (await res.json()) as ApiSuccessEnvelope<SendMessagePayload>;
@@ -816,4 +846,495 @@ export async function deleteConversation(token: string, peerId: number): Promise
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) throw await parseErrorResponse(res);
+}
+
+async function chatMessageMutation(
+  token: string,
+  path: string,
+  method: 'PATCH' | 'DELETE' | 'PUT',
+  body?: unknown
+): Promise<ChatMessage> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/social/conversations/${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<ChatMessage>;
+  return env.data;
+}
+
+/** Edits one of your messages (up to 15 min after sending). */
+export function editConversationMessage(token: string, peerId: number, messageId: number, text: string) {
+  return chatMessageMutation(token, `${peerId}/messages/${messageId}`, 'PATCH', { text });
+}
+
+/** Unsends one of your messages for both people. */
+export function unsendConversationMessage(token: string, peerId: number, messageId: number) {
+  return chatMessageMutation(token, `${peerId}/messages/${messageId}`, 'DELETE');
+}
+
+/** Sets your reaction on a message; `null` removes it. */
+export function setMessageReaction(token: string, peerId: number, messageId: number, emoji: string | null) {
+  return chatMessageMutation(token, `${peerId}/messages/${messageId}/reaction`, 'PUT', { emoji });
+}
+
+/** "Digitando…" ping; the server forgets it after a few seconds. Failures are ignored. */
+export async function sendTypingPing(token: string, peerId: number): Promise<void> {
+  const base = getApiBaseUrl();
+  try {
+    await fetch(`${base}/api/v1/social/conversations/${peerId}/typing`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    // Typing is best effort.
+  }
+}
+
+export async function submitFeedback(
+  token: string,
+  payload: import('./types').CreateFeedbackPayload
+): Promise<import('./types').CreatedFeedbackResponse> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/feedback`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<
+    import('./types').CreatedFeedbackResponse
+  >;
+  return env.data;
+}
+
+export async function fetchMyFeedback(
+  token: string
+): Promise<import('./types').FeedbackMineItem[]> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/feedback/mine`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<
+    import('./types').FeedbackMineItem[]
+  >;
+  return env.data;
+}
+
+// ---------------------------------------------------------------------------
+// Notification Preferences & Class Rooms (Announcements, Chat, Off-Topic, Election)
+// ---------------------------------------------------------------------------
+
+export async function fetchNotificationPreferences(
+  token: string
+): Promise<import('./types').NotificationPreferences> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/account/notification-preferences`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').NotificationPreferences>;
+  return env.data;
+}
+
+export async function updateNotificationPreferences(
+  token: string,
+  patch: Partial<{
+    grades_enabled: boolean;
+    announcements_enabled: boolean;
+    social_enabled: boolean;
+    room_chat_mode: import('./types').RoomChatNotificationMode;
+    room_offtopic_mode: import('./types').RoomChatNotificationMode;
+  }>
+): Promise<import('./types').NotificationPreferences> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/account/notification-preferences`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').NotificationPreferences>;
+  return env.data;
+}
+
+export async function fetchMyClassroomOverview(
+  token: string
+): Promise<import('./types').ClassroomOverviewPayload> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').ClassroomOverviewPayload>;
+  return env.data;
+}
+
+export async function fetchRoomElection(
+  token: string
+): Promise<import('./types').ElectionStatePayload> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me/election`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').ElectionStatePayload>;
+  return env.data;
+}
+
+export async function castRepresentativeVote(
+  token: string,
+  candidateId: number
+): Promise<import('./types').ElectionStatePayload> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me/representatives/votes/${candidateId}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').ElectionStatePayload>;
+  return env.data;
+}
+
+export async function revokeRepresentativeVote(
+  token: string,
+  candidateId: number
+): Promise<import('./types').ElectionStatePayload> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me/representatives/votes/${candidateId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').ElectionStatePayload>;
+  return env.data;
+}
+
+export async function updateClassroomAppearance(
+  token: string,
+  payload: {
+    avatar_data_url?: string;
+    banner_data_url?: string;
+    clear_avatar?: boolean;
+    clear_banner?: boolean;
+  }
+): Promise<import('./types').ClassroomInfo> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me/appearance`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').ClassroomInfo>;
+  return env.data;
+}
+
+export async function createClassroomAnnouncement(
+  token: string,
+  payload: {
+    category?: import('./types').AnnouncementCategory;
+    title: string;
+    body: string;
+    event_date?: string | null;
+    pinned?: boolean;
+    notify_push?: boolean;
+    image_data_url?: string | null;
+  }
+): Promise<import('./types').AnnouncementItem> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me/announcements`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').AnnouncementItem>;
+  return env.data;
+}
+
+export async function updateClassroomAnnouncement(
+  token: string,
+  id: number,
+  payload: { title?: string; body?: string; pinned?: boolean }
+): Promise<import('./types').AnnouncementItem> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me/announcements/${id}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').AnnouncementItem>;
+  return env.data;
+}
+
+export async function deleteClassroomAnnouncement(token: string, id: number): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me/announcements/${id}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+}
+
+export async function markAnnouncementRead(token: string, id: number): Promise<number> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me/announcements/${id}/read`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<{ read_count: number }>;
+  return env.data.read_count;
+}
+
+export async function setAnnouncementReaction(
+  token: string,
+  id: number,
+  emoji: string | null
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me/announcements/${id}/reaction`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ emoji }),
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+}
+
+export async function fetchClassroomChannelMessages(
+  token: string,
+  kind: import('./types').ClassroomChannelKind,
+  opts: { afterRev?: number; beforeId?: number; limit?: number } = {}
+): Promise<import('./types').ClassroomMessagesPayload> {
+  const base = getApiBaseUrl();
+  const qs = new URLSearchParams();
+  if (typeof opts.afterRev === 'number') qs.set('after_rev', String(opts.afterRev));
+  if (typeof opts.beforeId === 'number') qs.set('before_id', String(opts.beforeId));
+  if (typeof opts.limit === 'number') qs.set('limit', String(opts.limit));
+  const query = qs.toString() ? `?${qs.toString()}` : '';
+  const res = await fetch(`${base}/api/v1/classrooms/me/channels/${kind}/messages${query}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').ClassroomMessagesPayload>;
+  return env.data;
+}
+
+export async function sendClassroomChannelMessage(
+  token: string,
+  kind: import('./types').ClassroomChannelKind,
+  payload: {
+    text: string;
+    reply_to_id?: number | null;
+    ref_announcement_id?: number | null;
+    image_data_url?: string | null;
+  }
+): Promise<import('./types').SendRoomMessagePayload> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me/channels/${kind}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').SendRoomMessagePayload>;
+  return env.data;
+}
+
+export async function editClassroomChannelMessage(
+  token: string,
+  kind: import('./types').ClassroomChannelKind,
+  id: number,
+  text: string
+): Promise<import('./types').ClassroomChatMessage> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me/channels/${kind}/messages/${id}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').ClassroomChatMessage>;
+  return env.data;
+}
+
+export async function deleteClassroomChannelMessage(
+  token: string,
+  kind: import('./types').ClassroomChannelKind,
+  id: number
+): Promise<import('./types').ClassroomChatMessage> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me/channels/${kind}/messages/${id}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').ClassroomChatMessage>;
+  return env.data;
+}
+
+export async function setClassroomChannelMessageReaction(
+  token: string,
+  kind: import('./types').ClassroomChannelKind,
+  id: number,
+  emoji: string | null
+): Promise<import('./types').ClassroomChatMessage> {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/v1/classrooms/me/channels/${kind}/messages/${id}/reaction`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ emoji }),
+  });
+  if (!res.ok) throw await parseErrorResponse(res);
+  const env = (await res.json()) as ApiSuccessEnvelope<import('./types').ClassroomChatMessage>;
+  return env.data;
+}
+
+export async function sendClassroomChannelTyping(
+  token: string,
+  kind: import('./types').ClassroomChannelKind
+): Promise<void> {
+  const base = getApiBaseUrl();
+  await fetch(`${base}/api/v1/classrooms/me/channels/${kind}/typing`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  }).catch(() => {});
+}
+
+const classroomMediaCache = new Map<string, string>();
+
+/** Fetches an authenticated room JPEG asset (avatar, banner, announcement/message attachment) as a cached Object URL. */
+export async function fetchAuthenticatedMediaUrl(
+  token: string,
+  relativePath: string
+): Promise<string | null> {
+  const cached = classroomMediaCache.get(relativePath);
+  if (cached) return cached;
+  const base = getApiBaseUrl();
+  const url = relativePath.startsWith('http') ? relativePath : `${base}${relativePath}`;
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    const objUrl = URL.createObjectURL(blob);
+    classroomMediaCache.set(relativePath, objUrl);
+    return objUrl;
+  } catch {
+    return null;
+  }
+}
+
+export interface ClassroomStreamEvent {
+  kind: 'rev_bump' | 'typing' | 'representatives_changed' | 'appearance_changed' | 'resync';
+  channel?: string;
+  rev?: number;
+  account_id?: number;
+  label?: string;
+  room_id?: number;
+}
+
+/** Subscribes to `GET /api/v1/classrooms/me/stream` using authenticated streaming fetch with auto-cleanup. */
+export function subscribeClassroomStream(
+  token: string,
+  onEvent: (ev: ClassroomStreamEvent) => void
+): () => void {
+  const controller = new AbortController();
+  let stopped = false;
+
+  const connect = async () => {
+    const base = getApiBaseUrl();
+    while (!stopped) {
+      try {
+        const res = await fetch(`${base}/api/v1/classrooms/me/stream`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'text/event-stream',
+          },
+          signal: controller.signal,
+        });
+        if (!res.ok || !res.body) {
+          await new Promise((r) => window.setTimeout(r, 4000));
+          continue;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (!stopped) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const frames = buf.split('\n\n');
+          buf = frames.pop() ?? '';
+          for (const frame of frames) {
+            for (const line of frame.split('\n')) {
+              if (line.startsWith('data:')) {
+                const raw = line.slice(5).trim();
+                if (!raw || raw === 'ping') continue;
+                try {
+                  onEvent(JSON.parse(raw) as ClassroomStreamEvent);
+                } catch {
+                  // ignore malformed frame
+                }
+              }
+            }
+          }
+        }
+      } catch {
+        if (stopped) return;
+      }
+      if (!stopped) {
+        await new Promise((r) => window.setTimeout(r, 3500));
+      }
+    }
+  };
+
+  void connect();
+  return () => {
+    stopped = true;
+    controller.abort();
+  };
 }

@@ -1,3 +1,4 @@
+import { installKeyboardInsets } from './platform/keyboardInsets';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { App as CapacitorApp } from '@capacitor/app';
@@ -23,10 +24,23 @@ import {
 import './index.css';
 import { installMotionTokens } from './theme/motion';
 import { installContentSizeMorph } from './theme/contentSizeMorph';
+import { installDiagnostics } from './telemetry/diagnostics';
 import { finishBootSplash } from './updater/bootSplash';
 
+installDiagnostics();
 installMotionTokens();
+installKeyboardInsets();
 installContentSizeMorph();
+
+// Tag low-end Android devices (<= 4 CPU cores or <= 3GB RAM) so expensive full-screen
+// backdrop-filter blur passes are skipped automatically for smooth 60fps scrolling.
+if (typeof document !== 'undefined' && typeof navigator !== 'undefined') {
+  const cores = navigator.hardwareConcurrency || 8;
+  const memGb = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
+  if (cores <= 4 || memGb <= 3) {
+    document.documentElement.classList.add('n2sac-low-end');
+  }
+}
 
 // If a hot deployment replaces lazy screen chunks while a user has the app open,
 // reload once cleanly into the new bundle instead of throwing a dynamic import crash.

@@ -11,6 +11,21 @@ export type DesignSystemMode = 'default' | 'material-you';
 export type ThemeMode = 'system' | 'adaptive' | 'dark' | 'light' | 'amoled';
 export type PaletteStyle = 'editorial' | 'tonalSpot' | 'expressive' | 'vibrant';
 export type IconShapeVariant = 'squircle' | 'cookie6' | 'clover' | 'pill' | 'pentagon' | 'random';
+export type AvatarShapeVariant = 'circle' | 'squircle' | 'rounded' | 'square';
+
+export function resolveAvatarRadius(shape: AvatarShapeVariant | undefined, size: number): string {
+  switch (shape) {
+    case 'squircle':
+      return `${Math.round(size * 0.34)}px`;
+    case 'rounded':
+      return `${Math.round(size * 0.24)}px`;
+    case 'square':
+      return `${Math.max(4, Math.round(size * 0.1))}px`;
+    case 'circle':
+    default:
+      return '50%';
+  }
+}
 
 export const EDITORIAL_PRESET_ID = 'editorial-default';
 export const EDITORIAL_SEED_HEX = '#10A37F';

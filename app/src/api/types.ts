@@ -316,12 +316,32 @@ export interface FollowMutationResult {
   peer_class_code: string;
 }
 
+export interface ChatReplyPreview {
+  id: number;
+  sender_id: number;
+  is_me: boolean;
+  text: string;
+  deleted: boolean;
+}
+
+export interface ChatReaction {
+  emoji: string;
+  count: number;
+  mine: boolean;
+}
+
+/** Fields after `created_at` come from servers with the chat extras (absent on older ones). */
 export interface ChatMessage {
   id: number;
   sender_id: number;
   is_me: boolean;
   text: string;
   created_at: string;
+  edited_at?: string | null;
+  deleted?: boolean;
+  reply_to?: ChatReplyPreview | null;
+  reactions?: ChatReaction[];
+  rev?: number;
 }
 
 export interface ChatRateLimitStatus {
@@ -337,9 +357,229 @@ export interface ConversationMessagesPayload {
   blocked: boolean;
   messages: ChatMessage[];
   rate_limit: ChatRateLimitStatus;
+  /** Chat extras (absent on older servers). */
+  peer_last_read_id?: number;
+  peer_typing?: boolean;
+  next_rev?: number;
+  has_more_before?: boolean;
 }
 
 export interface SendMessagePayload {
   message: ChatMessage;
+  rate_limit: ChatRateLimitStatus;
+}
+
+export type FeedbackKind = 'bug' | 'suggestion' | 'feedback';
+export type FeedbackStatus = 'open' | 'triaged' | 'resolved' | 'dismissed';
+export type BugSeverity = 'blocker' | 'major' | 'minor';
+export type BugFrequency = 'always' | 'sometimes' | 'once';
+export type FeedbackArea =
+  | 'boletim'
+  | 'ranking'
+  | 'frequencia'
+  | 'sentinela'
+  | 'social'
+  | 'configuracoes'
+  | 'login_update'
+  | 'geral'
+  | 'nova_funcao';
+
+export interface CreateFeedbackPayload {
+  kind: FeedbackKind;
+  area: FeedbackArea;
+  title: string;
+  severity?: BugSeverity;
+  frequency?: BugFrequency;
+  steps_to_reproduce?: string;
+  actual_behavior?: string;
+  expected_behavior?: string;
+  problem?: string;
+  proposal?: string;
+  rating?: number;
+  message?: string;
+  attachments?: string[];
+  context?: Record<string, unknown>;
+}
+
+export interface CreatedFeedbackResponse {
+  id: number;
+  kind: FeedbackKind;
+  status: FeedbackStatus;
+  area: string;
+  title: string;
+  attachment_count: number;
+  created_at: string;
+}
+
+export interface FeedbackMineItem {
+  id: number;
+  kind: FeedbackKind;
+  status: FeedbackStatus;
+  area: string;
+  severity: BugSeverity | null;
+  frequency: BugFrequency | null;
+  rating: number | null;
+  title: string;
+  attachment_count: number;
+  dev_note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type RoomChatNotificationMode = 'all' | 'mentions' | 'muted';
+
+export interface NotificationPreferences {
+  grades_enabled: boolean;
+  announcements_enabled: boolean;
+  social_enabled: boolean;
+  room_chat_mode: RoomChatNotificationMode;
+  room_offtopic_mode: RoomChatNotificationMode;
+  updated_at: string;
+}
+
+export type ClassroomChannelKind = 'chat' | 'off_topic';
+export type AnnouncementCategory = string;
+
+export interface ClassroomInfo {
+  id: number;
+  class_code: string;
+  school_year: number;
+  member_count: number;
+  min_members_required: number;
+  is_functional: boolean;
+  quorum: number;
+  max_representatives: number;
+  max_votes_per_student: number;
+  avatar_url: string | null;
+  banner_url: string | null;
+}
+
+export interface RoomVoterChip {
+  account_id: number;
+  display_label: string;
+  avatar_url: string | null;
+}
+
+export interface RoomRepresentativeSummary {
+  account_id: number;
+  display_label: string;
+  avatar_url: string | null;
+  vote_count: number;
+  elected_at: string;
+}
+
+export interface ElectionCandidateRow {
+  rank: number;
+  account_id: number;
+  is_me: boolean;
+  display_label: string;
+  nsac_email?: string;
+  avatar_url: string | null;
+  vote_count: number;
+  is_representative: boolean;
+  voted_by_me: boolean;
+  voters: RoomVoterChip[];
+}
+
+export interface ElectionStatePayload {
+  room: ClassroomInfo;
+  am_i_representative: boolean;
+  my_votes: number[];
+  candidates: ElectionCandidateRow[];
+}
+
+export interface RoomChannelPreview {
+  channel_kind: ClassroomChannelKind;
+  unread_count: number;
+  last_message_id: number | null;
+  last_message_preview: string | null;
+  last_sender_label: string | null;
+  last_message_at: string | null;
+}
+
+export interface AnnouncementItem {
+  id: number;
+  room_id: number;
+  author_id: number;
+  author_label: string;
+  author_avatar_url: string | null;
+  is_mine: boolean;
+  category: AnnouncementCategory;
+  title: string;
+  body: string;
+  event_date: string | null;
+  pinned: boolean;
+  notify_push: boolean;
+  attachment_url: string | null;
+  read_count: number;
+  read_by_me: boolean;
+  reactions: ChatReaction[];
+  created_at: string;
+  edited_at: string | null;
+  deleted: boolean;
+  rev: number;
+}
+
+export interface ClassroomOverviewPayload {
+  room: ClassroomInfo;
+  am_i_representative: boolean;
+  my_votes: number[];
+  representatives: RoomRepresentativeSummary[];
+  unread_announcements: number;
+  chat: RoomChannelPreview;
+  off_topic: RoomChannelPreview;
+  announcements: AnnouncementItem[];
+  next_announcements_rev: number;
+}
+
+export interface RoomMessageReplyPreview {
+  id: number;
+  sender_id: number;
+  sender_label: string;
+  is_me: boolean;
+  text: string;
+  deleted: boolean;
+}
+
+export interface RoomAnnouncementRef {
+  id: number;
+  title: string;
+  category: AnnouncementCategory;
+}
+
+export interface ClassroomChatMessage {
+  id: number;
+  room_id: number;
+  channel_kind: ClassroomChannelKind;
+  sender_id: number;
+  sender_label: string;
+  sender_avatar_url: string | null;
+  sender_is_representative: boolean;
+  is_me: boolean;
+  text: string;
+  attachment_url: string | null;
+  created_at: string;
+  edited_at: string | null;
+  deleted: boolean;
+  deletion_kind: 'author' | 'representative' | 'moderation' | null;
+  reply_to: RoomMessageReplyPreview | null;
+  ref_announcement: RoomAnnouncementRef | null;
+  reactions: ChatReaction[];
+  rev: number;
+}
+
+export interface ClassroomMessagesPayload {
+  room: ClassroomInfo;
+  channel_kind: ClassroomChannelKind;
+  am_i_representative: boolean;
+  messages: ClassroomChatMessage[];
+  rate_limit: ChatRateLimitStatus;
+  typing_users: string[];
+  next_rev: number;
+  has_more_before: boolean;
+}
+
+export interface SendRoomMessagePayload {
+  message: ClassroomChatMessage;
   rate_limit: ChatRateLimitStatus;
 }

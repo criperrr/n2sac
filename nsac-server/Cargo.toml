@@ -34,6 +34,8 @@ url.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
 base64 = "0.22"
+flate2 = "1"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 
 [dev-dependencies]
 wiremock.workspace = true

@@ -220,6 +220,8 @@ fn parse_service_api_keys(raw: Option<String>) -> Result<Vec<ServiceKeySeed>, Co
         "nsac:read".to_string(),
         "nsac:write".to_string(),
         "account:link".to_string(),
+        "feedback:read".to_string(),
+        "feedback:write".to_string(),
     ];
 
     let mut seeds = Vec::new();

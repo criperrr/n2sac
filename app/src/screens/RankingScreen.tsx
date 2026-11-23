@@ -79,7 +79,17 @@ export const RankingScreen: React.FC<{
   classCode: string | null;
   preferences: RankingPreferences | null;
   onPreferencesUpdated: (prefs: RankingPreferences) => void;
-}> = ({ token, accountId, classCode, preferences, onPreferencesUpdated }) => {
+  refreshSignal?: number;
+  onRefreshingChange?: (busy: boolean) => void;
+}> = ({
+  token,
+  accountId,
+  classCode,
+  preferences,
+  onPreferencesUpdated,
+  refreshSignal = 0,
+  onRefreshingChange,
+}) => {
   const { tokens, isMaterialYou } = useM3Theme();
   const [scope, setScope] = useState<'class' | 'course' | 'school'>('class');
   const [bimester, setBimester] = useState<number>(0); // 0 = all
@@ -99,8 +109,25 @@ export const RankingScreen: React.FC<{
   const peerCacheRef = useRef<Map<string, PeerComparisonDetail>>(new Map());
   const onPreferencesUpdatedRef = useRef(onPreferencesUpdated);
   onPreferencesUpdatedRef.current = onPreferencesUpdated;
+  const onRefreshingChangeRef = useRef(onRefreshingChange);
+  onRefreshingChangeRef.current = onRefreshingChange;
   const lastReportedPrefsRef = useRef<RankingPreferences | null>(preferences);
   lastReportedPrefsRef.current = preferences;
+
+  // Report busy state up to App shell so the top-bar / pull-to-refresh indicator reflects Ranking reloads.
+  useEffect(() => {
+    onRefreshingChangeRef.current?.(loading || peerLoading);
+    return () => {
+      onRefreshingChangeRef.current?.(false);
+    };
+  }, [loading, peerLoading]);
+
+  // Trigger a full Ranking + active peer comparison reload when the user hits Refresh on the Ranking tab.
+  useEffect(() => {
+    if (!refreshSignal) return;
+    peerCacheRef.current.clear();
+    setRefreshNonce((n) => n + 1);
+  }, [refreshSignal]);
 
   // Debounce subject search keystrokes so typing a subject name sends 1 request instead of N.
   useEffect(() => {
@@ -199,7 +226,7 @@ export const RankingScreen: React.FC<{
       });
 
     return () => controller.abort();
-  }, [token, scope, bimester, debouncedSubject, selectedPeerId]);
+  }, [token, scope, bimester, debouncedSubject, selectedPeerId, refreshNonce]);
 
   // Progressive list: the first rows render with the screen, the rest in idle time.
   // Keyed by filter params (not `data`) so opening a peer comparison never tears down and

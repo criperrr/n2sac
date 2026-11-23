@@ -3,7 +3,7 @@ use axum::response::Response;
 use serde::Deserialize;
 
 use crate::auth::{DualAuth, Principal};
-use crate::db::social::FollowEdgeStatus;
+use crate::db::social::{FollowEdgeStatus, MessageQuery};
 use crate::error::ServerError;
 use crate::fcm::FcmDeliveryOutcome;
 use crate::http::envelope::ok_json;
@@ -18,6 +18,9 @@ fn user_account_id(principal: &Principal) -> Result<i64, ServerError> {
 }
 
 fn format_message_preview(raw: &str) -> String {
+    if let Some(label) = crate::db::social::gif_message_label(raw) {
+        return label.to_string();
+    }
     let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.is_empty() {
         return "Enviou uma nova mensagem no n²sac.".to_string();
@@ -241,7 +244,14 @@ pub async fn delete_block(
     Ok(ok_json(relationship))
 }
 
-/// GET /api/v1/social/conversations/{peer_id}/messages?after_id=&limit=
+fn query_i64(pairs: &[(String, String)], key: &str) -> Option<i64> {
+    pairs
+        .iter()
+        .find(|(k, _)| k == key)
+        .and_then(|(_, v)| v.trim().parse::<i64>().ok())
+}
+
+/// GET /api/v1/social/conversations/{peer_id}/messages?after_id=&before_id=&after_rev=&limit=
 pub async fn get_conversation_messages(
     State(state): State<AppState>,
     DualAuth(principal): DualAuth,
@@ -250,26 +260,26 @@ pub async fn get_conversation_messages(
 ) -> Result<Response, ServerError> {
     let viewer = user_account_id(&principal)?;
     let pairs = parse_query_pairs(raw_query.as_deref());
-    let after_id = pairs
-        .iter()
-        .find(|(k, _)| k == "after_id")
-        .and_then(|(_, v)| v.trim().parse::<i64>().ok());
-    let limit = pairs
-        .iter()
-        .find(|(k, _)| k == "limit")
-        .and_then(|(_, v)| v.trim().parse::<i64>().ok())
-        .unwrap_or(60);
+    let query = MessageQuery {
+        after_id: query_i64(&pairs, "after_id"),
+        before_id: query_i64(&pairs, "before_id"),
+        after_rev: query_i64(&pairs, "after_rev"),
+        limit: query_i64(&pairs, "limit").unwrap_or(60),
+    };
 
-    let payload = state
+    let mut payload = state
         .social()
-        .get_messages(viewer, peer_id, after_id, limit, &state.crypto)
+        .get_messages(viewer, peer_id, query, &state.crypto)
         .await?;
+    payload.peer_typing = state.caches.chat_typing.contains_key(&(peer_id, viewer));
     Ok(ok_json(payload))
 }
 
 #[derive(Deserialize)]
 pub struct SendMessageRequest {
     pub text: String,
+    #[serde(default)]
+    pub reply_to_id: Option<i64>,
 }
 
 /// POST /api/v1/social/conversations/{peer_id}/messages
@@ -282,8 +292,10 @@ pub async fn post_conversation_message(
     let viewer = user_account_id(&principal)?;
     let payload = state
         .social()
-        .send_message(viewer, peer_id, &body.text, &state.crypto)
+        .send_message(viewer, peer_id, &body.text, body.reply_to_id, &state.crypto)
         .await?;
+    // Sending ends the typing state right away.
+    state.caches.chat_typing.invalidate(&(viewer, peer_id)).await;
 
     let actor_name = state
         .social()
@@ -302,6 +314,75 @@ pub async fn post_conversation_message(
     );
 
     Ok(ok_json(payload))
+}
+
+#[derive(Deserialize)]
+pub struct EditMessageRequest {
+    pub text: String,
+}
+
+/// PATCH /api/v1/social/conversations/{peer_id}/messages/{message_id}
+pub async fn patch_conversation_message(
+    State(state): State<AppState>,
+    DualAuth(principal): DualAuth,
+    Path((peer_id, message_id)): Path<(i64, i64)>,
+    AppJson(body): AppJson<EditMessageRequest>,
+) -> Result<Response, ServerError> {
+    let viewer = user_account_id(&principal)?;
+    let message = state
+        .social()
+        .edit_message(viewer, peer_id, message_id, &body.text, &state.crypto)
+        .await?;
+    Ok(ok_json(message))
+}
+
+/// DELETE /api/v1/social/conversations/{peer_id}/messages/{message_id} (unsend for everyone)
+pub async fn delete_conversation_message(
+    State(state): State<AppState>,
+    DualAuth(principal): DualAuth,
+    Path((peer_id, message_id)): Path<(i64, i64)>,
+) -> Result<Response, ServerError> {
+    let viewer = user_account_id(&principal)?;
+    let message = state
+        .social()
+        .unsend_message(viewer, peer_id, message_id, &state.crypto)
+        .await?;
+    Ok(ok_json(message))
+}
+
+#[derive(Deserialize)]
+pub struct ReactionRequest {
+    /// `null` removes the viewer's reaction.
+    pub emoji: Option<String>,
+}
+
+/// PUT /api/v1/social/conversations/{peer_id}/messages/{message_id}/reaction
+pub async fn put_message_reaction(
+    State(state): State<AppState>,
+    DualAuth(principal): DualAuth,
+    Path((peer_id, message_id)): Path<(i64, i64)>,
+    AppJson(body): AppJson<ReactionRequest>,
+) -> Result<Response, ServerError> {
+    let viewer = user_account_id(&principal)?;
+    let message = state
+        .social()
+        .set_reaction(viewer, peer_id, message_id, body.emoji.as_deref(), &state.crypto)
+        .await?;
+    Ok(ok_json(message))
+}
+
+/// POST /api/v1/social/conversations/{peer_id}/typing (ping while composing; expires on its own)
+pub async fn post_typing(
+    State(state): State<AppState>,
+    DualAuth(principal): DualAuth,
+    Path(peer_id): Path<i64>,
+) -> Result<Response, ServerError> {
+    let viewer = user_account_id(&principal)?;
+    let rel = state.social().relationship(viewer, peer_id).await?;
+    if rel.is_friend && !rel.blocked_by_me && !rel.blocked_me {
+        state.caches.chat_typing.insert((viewer, peer_id), ()).await;
+    }
+    Ok(ok_json(serde_json::json!({ "ok": true })))
 }
 
 /// DELETE /api/v1/social/conversations/{peer_id}

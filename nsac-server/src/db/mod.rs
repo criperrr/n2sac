@@ -1,8 +1,11 @@
 pub mod accounts;
 pub mod auth;
 pub mod boletim;
+pub mod feedback;
+pub mod moderation;
 pub mod profiles;
 pub mod ranking;
+pub mod classrooms;
 pub mod sentinel;
 pub mod snapshots;
 pub mod social;
@@ -14,6 +17,8 @@ pub use auth::{
     AuthRepo, IssuedSession, ServiceClientRecord, UserSessionLookup, sha256_bytes_hex, sha256_hex,
 };
 pub use boletim::BoletimRepo;
+pub use feedback::FeedbackRepo;
+pub use moderation::ModerationRepo;
 pub use ranking::{
     ComparisonSummaryResponse, LeaderboardEntry, PeerComparisonDetail, RankingPreferences,
     RankingRepo, SubjectComparisonRow,

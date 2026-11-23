@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_USER="${N2SAC_USER:-criper}"
-REMOTE_HOST="${N2SAC_HOST:-192.168.1.150}"
+REMOTE_HOST="${N2SAC_HOST:-100.69.91.121}"
 REMOTE_DIR="${N2SAC_REMOTE_DIR:-/opt/n2sac}"
 VERSION_JSON="${ROOT_DIR}/app/public/version.json"
 
@@ -77,6 +77,10 @@ rsync -az --delete \
   --exclude '.git/' \
   --exclude '.agents/' \
   --exclude 'secrets/' \
+  --exclude 'scripts/admin-db-panel/' \
+  --exclude 'scripts/dev-local/' \
+  --exclude 'docker-compose.test.yml' \
+  --exclude 'deploy/nginx.test.conf' \
   --exclude '.env' \
   "${ROOT_DIR}/" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/"
 

@@ -4,6 +4,7 @@ use std::error::Error;
 
 use nsac_server::auth::seed_service_clients;
 use nsac_server::config::Config;
+use nsac_server::discord::spawn_discord_bot;
 use nsac_server::fcm::FcmClient;
 use nsac_server::http::build_router;
 use nsac_server::run_migrations;
@@ -35,11 +36,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let fcm_client = FcmClient::new(config.fcm.clone())?;
     let state = AppState::with_default_ports(config, pool.clone())?;
     let seeded = seed_service_clients(&state).await?;
-    let sentinel_handle = spawn_sentinel_worker(state.clone(), fcm_client);
+    let sentinel_handle = spawn_sentinel_worker(state.clone(), fcm_client.clone());
+    let discord_handle = spawn_discord_bot(state.clone(), fcm_client);
     tracing::info!(
         bind_addr = %bind_addr,
         service_clients_seeded = seeded,
-        "Starting nsac-server HTTP API + Sentinel"
+        discord_bot_active = discord_handle.is_some(),
+        "Starting nsac-server HTTP API + Sentinel + Discord Bot"
     );
 
     let router = build_router(state);
@@ -50,6 +53,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
 
     sentinel_handle.abort();
+    if let Some(h) = discord_handle {
+        h.abort();
+    }
     pool.close().await;
     tracing::info!("nsac-server shut down cleanly");
     Ok(())
