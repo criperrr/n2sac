@@ -117,23 +117,36 @@ jobs:
       - name: Build signed Release APK inside Docker builder
         run: |
           set -euo pipefail
+          HOST_UID="$(id -u)"
+          HOST_GID="$(id -g)"
           docker run --rm --network=host \
             -v "${GITHUB_WORKSPACE}:/workspace" \
             -v "${{ steps.secrets.outputs.dir }}:/run/n2sac-secrets:ro" \
             -v n2sac-gradle-cache:/root/.gradle \
             -v n2sac-npm-cache:/root/.npm \
             --env-file "${{ steps.secrets.outputs.dir }}/signing.env" \
+            -e HOST_UID="${HOST_UID}" \
+            -e HOST_GID="${HOST_GID}" \
             -w /workspace \
             "${BUILDER_IMAGE}" \
             bash -lc '
               set -euo pipefail
+              cp /workspace/app/android/app/build.gradle /tmp/build.gradle.orig
               cd /workspace/app
               npm ci --prefer-offline
               npm run build
               unset N2SAC_DEV_SERVER_URL
               npx cap sync android
+              # Work around @capacitor/background-runner install_libs.js splicing dirs into line 5
+              cp /tmp/build.gradle.orig /workspace/app/android/app/build.gradle
               cd /workspace/app/android
               ./gradlew --no-daemon assembleRelease
+              chown -R "${HOST_UID}:${HOST_GID}" \
+                /workspace/app/node_modules \
+                /workspace/app/dist \
+                /workspace/app/android/app/build \
+                /workspace/app/android/app/src/main/assets \
+                /workspace/app/android/capacitor-cordova-android-plugins 2>/dev/null || true
             '
 
       - name: Verify APK signature against production assetlinks.json fingerprints & compute SHA-256
