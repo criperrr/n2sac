@@ -332,7 +332,7 @@ impl Config {
             1,
         )?;
         let nsac_max_concurrent_requests =
-            parse_usize_min(&lookup, &["NSAC_MAX_CONCURRENT_REQUESTS"], 4, 1)?;
+            parse_usize_min(&lookup, &["NSAC_MAX_CONCURRENT_REQUESTS"], 3, 1)?;
 
         let sentinel_enabled = match non_empty(&lookup, &["SENTINEL_ENABLED"]) {
             Some((name, val)) => parse_bool(name, &val)?,
@@ -345,7 +345,7 @@ impl Config {
                 "SENTINEL_COLD_BASELINE_SECS",
                 "SENTINEL_BASELINE_INTERVAL_SECS",
             ],
-            86_400,
+            604_800,
             1,
         )?;
         let historical_radius_days_u64 =
@@ -383,7 +383,7 @@ impl Config {
                 }
                 parsed
             }
-            None => 120,
+            None => 600,
         };
 
         let hot_max_interval_secs =
@@ -403,8 +403,8 @@ impl Config {
                 }
                 None => match hot_min_env {
                     Some(("SENTINEL_HOT_INTERVAL_SECS", _)) => hot_min_interval_secs,
-                    Some(_) => 180.max(hot_min_interval_secs),
-                    None => 180,
+                    Some(_) => 600.max(hot_min_interval_secs),
+                    None => 600,
                 },
             };
 

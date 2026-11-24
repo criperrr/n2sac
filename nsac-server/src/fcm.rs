@@ -739,7 +739,9 @@ fn build_service_account_assertion(raw_json: &str, default_aud: &str) -> Option<
 }
 
 fn is_unregistered_response(body_text: &str) -> bool {
-    body_text.contains("UNREGISTERED") || body_text.contains("NOT_FOUND")
+    body_text.contains("UNREGISTERED")
+        || body_text.contains("NOT_FOUND")
+        || body_text.contains("not a valid FCM registration token")
 }
 
 fn extract_error_detail(body_text: &str) -> Option<String> {
