@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod auth;
 pub mod boletim;
+pub mod connections;
 pub mod feedback;
 pub mod moderation;
 pub mod profiles;
@@ -17,6 +18,7 @@ pub use auth::{
     AuthRepo, IssuedSession, ServiceClientRecord, UserSessionLookup, sha256_bytes_hex, sha256_hex,
 };
 pub use boletim::BoletimRepo;
+pub use connections::ConnectionRepo;
 pub use feedback::FeedbackRepo;
 pub use moderation::ModerationRepo;
 pub use ranking::{

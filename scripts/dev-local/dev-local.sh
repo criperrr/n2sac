@@ -60,6 +60,7 @@ start_server() {
   SENTINEL_ENABLED=false \
   FCM_ENABLED=false \
   CACHE_AUTH_TTL_SECS=0 \
+  GOOGLE_OAUTH_CLIENT_ID="${GOOGLE_OAUTH_CLIENT_ID:-}" \
     setsid nohup "$ROOT/target/debug/nsac-server" </dev/null >"$RUN/server.log" 2>&1 &
   for _ in $(seq 1 40); do
     curl -sf "http://127.0.0.1:$API_PORT/api/v1/health" >/dev/null && return 0

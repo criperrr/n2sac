@@ -9,7 +9,7 @@ use nsac_core::error::ErrorCode;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 
-use crate::db::ranking::{avatar_path, format_student_label};
+use crate::db::ranking::{AccountTagBadge, avatar_path, format_student_label};
 use crate::db::social::{ALLOWED_REACTIONS, ChatRateLimitStatus, ChatReaction, gif_message_label};
 use crate::error::ServerError;
 use crate::media::{ZippedSanitizedImage, unzip_single_file};
@@ -293,6 +293,8 @@ pub struct ClassroomChatMessage {
     pub sender_label: String,
     pub sender_avatar_url: Option<String>,
     pub sender_is_representative: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sender_tags: Vec<AccountTagBadge>,
     pub is_me: bool,
     pub text: String,
     pub attachment_url: Option<String>,
@@ -1893,6 +1895,48 @@ impl ClassroomsRepo {
                 .collect()
         };
 
+        let sender_ids: Vec<i64> = {
+            let mut set = HashSet::new();
+            for r in &rows {
+                set.insert(r.sender_id);
+            }
+            set.into_iter().collect()
+        };
+        let mut sender_tags_map: HashMap<i64, Vec<AccountTagBadge>> = HashMap::new();
+        if !sender_ids.is_empty() {
+            let tag_rows: Vec<(i64, String, String, String, String, i16)> = sqlx::query_as(
+                r#"
+                SELECT
+                    at.account_id,
+                    td.slug,
+                    td.label,
+                    td.description,
+                    td.color_hex,
+                    td.priority
+                FROM account_tags at
+                JOIN tag_definitions td ON td.slug = at.tag_slug
+                WHERE at.account_id = ANY($1)
+                ORDER BY td.priority ASC, td.label ASC
+                "#,
+            )
+            .bind(&sender_ids)
+            .fetch_all(&self.pool)
+            .await?;
+
+            for (account_id, slug, label, description, color_hex, priority) in tag_rows {
+                sender_tags_map
+                    .entry(account_id)
+                    .or_default()
+                    .push(AccountTagBadge {
+                        slug,
+                        label,
+                        description,
+                        color_hex,
+                        priority,
+                    });
+            }
+        }
+
         let mut out = Vec::with_capacity(rows.len());
         for r in rows {
             if blocked_set.contains(&r.sender_id) {
@@ -1924,6 +1968,10 @@ impl ClassroomsRepo {
                 }
             }
             let sender = member_map.get(&r.sender_id);
+            let sender_tags = sender_tags_map
+                .get(&r.sender_id)
+                .cloned()
+                .unwrap_or_default();
             out.push(ClassroomChatMessage {
                 id: r.id,
                 room_id: r.room_id,
@@ -1934,6 +1982,7 @@ impl ClassroomsRepo {
                     .unwrap_or_else(|| format!("Aluno #{}", r.sender_id)),
                 sender_avatar_url: sender.and_then(|m| m.avatar_url()),
                 sender_is_representative: rep_set.contains(&r.sender_id),
+                sender_tags,
                 is_me: r.sender_id == viewer_id,
                 text,
                 attachment_url: if !deleted && r.has_attachment {

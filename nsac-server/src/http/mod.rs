@@ -1,6 +1,7 @@
 pub mod account_routes;
 pub mod auth_routes;
 pub mod compare_routes;
+pub mod connection_routes;
 pub mod envelope;
 pub mod extract;
 pub mod feedback_routes;
@@ -56,6 +57,27 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/account/profile",
             get(profile_routes::get_profile).put(profile_routes::put_profile),
+        )
+        .route(
+            "/api/v1/account/verify-google-name",
+            post(profile_routes::verify_google_name),
+        )
+        .route(
+            "/api/v1/account/connections",
+            get(connection_routes::list_my_connections),
+        )
+        .route(
+            "/api/v1/account/connections/{provider}",
+            put(connection_routes::put_my_connection)
+                .delete(connection_routes::delete_my_connection),
+        )
+        .route(
+            "/api/v1/account/connections/oauth/{provider}/start",
+            post(connection_routes::start_oauth_link),
+        )
+        .route(
+            "/api/v1/connections/oauth/{provider}/callback",
+            get(connection_routes::oauth_callback),
         )
         .route(
             "/api/v1/account/fcm-token",
@@ -189,6 +211,15 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/v1/nsac/home", get(nsac_routes::get_home))
         .route("/api/v1/nsac/boletim", get(nsac_routes::get_boletim))
+        .route("/api/v1/nsac/boletim/pdf", get(nsac_routes::get_boletim_pdf))
+        .route(
+            "/api/v1/nsac/boletim/pdf-link",
+            post(nsac_routes::create_boletim_pdf_link),
+        )
+        .route(
+            "/api/v1/nsac/boletim/pdf-download/{token}",
+            get(nsac_routes::download_boletim_pdf_by_token),
+        )
         .route("/api/v1/nsac/atrasos", get(nsac_routes::get_atrasos))
         .route("/api/v1/nsac/saidas", get(nsac_routes::get_saidas))
         .route(

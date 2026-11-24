@@ -368,8 +368,6 @@ pub async fn post_announcement(
         None
     };
 
-    let discord_jpeg = attachment.as_ref().map(|a| a.raw_jpeg_bytes.clone());
-
     let (room, item) = state
         .classrooms()
         .create_announcement(
@@ -436,30 +434,6 @@ pub async fn post_announcement(
                     }
                 })
                 .await;
-        });
-    }
-
-    // Optional opt-in mirroring to Discord channels configured with mirror_announcements = TRUE.
-    {
-        let db = state.db.clone();
-        let class_code = room.class_code.clone();
-        let title = item.title.clone();
-        let body_text = item.body.clone();
-        let author_label = item.author_label.clone();
-        let cat = item.category.clone();
-        let ev_date = item.event_date.clone();
-        tokio::spawn(async move {
-            crate::discord::broadcast_discord_class_announcement(
-                &db,
-                &class_code,
-                &author_label,
-                &cat,
-                &title,
-                &body_text,
-                ev_date.as_deref(),
-                discord_jpeg,
-            )
-            .await;
         });
     }
 

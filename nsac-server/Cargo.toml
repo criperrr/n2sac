@@ -31,7 +31,6 @@ uuid.workspace = true
 jsonwebtoken.workspace = true
 dotenvy.workspace = true
 url.workspace = true
-tokio-tungstenite.workspace = true
 futures-util.workspace = true
 base64 = "0.22"
 flate2 = "1"

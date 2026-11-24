@@ -3,9 +3,10 @@
 //! NSAC Unified Production HTTP Server (M1 persistence, cache, config, and ports).
 
 pub mod auth;
+pub mod boletim_pdf;
 pub mod config;
+pub mod connections;
 pub mod db;
-pub mod discord;
 pub mod error;
 pub mod fcm;
 pub mod http;

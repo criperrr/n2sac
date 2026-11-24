@@ -657,3 +657,246 @@ pub async fn get_ficha_pdf(Path(token): Path<String>) -> Response {
     res
 }
 
+struct BoletimPdfLink {
+    account_id: i64,
+    year: u16,
+    pdf: Arc<Vec<u8>>,
+    created: Instant,
+}
+
+static BOLETIM_PDF_LINKS: OnceLock<Mutex<HashMap<String, BoletimPdfLink>>> = OnceLock::new();
+
+fn boletim_pdf_links() -> std::sync::MutexGuard<'static, HashMap<String, BoletimPdfLink>> {
+    BOLETIM_PDF_LINKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+fn prettify_student_name_from_email(email: &str) -> String {
+    let local = email.split('@').next().unwrap_or(email);
+    let parts: Vec<String> = local
+        .split(['.', '_', '-'])
+        .filter(|p| !p.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut s = first.to_uppercase().to_string();
+                    s.push_str(&chars.as_str().to_lowercase());
+                    s
+                }
+                None => String::new(),
+            }
+        })
+        .collect();
+    if parts.is_empty() {
+        "Estudante".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
+async fn build_boletim_pdf_from_db(
+    state: &AppState,
+    account_id: i64,
+    requested_year: Option<u16>,
+) -> Result<(u16, Vec<u8>), ServerError> {
+    let account = state
+        .accounts()
+        .find_by_id(account_id)
+        .await?
+        .ok_or_else(|| ServerError::not_found("Account not found"))?;
+
+    let mut boletim = state
+        .boletim()
+        .get_boletim(account_id)
+        .await?
+        .ok_or_else(|| {
+            ServerError::not_found("Nenhum boletim sincronizado no banco de dados ainda.")
+        })?;
+    if boletim.data.is_empty() {
+        return Err(ServerError::not_found(
+            "Nenhum boletim sincronizado no banco de dados ainda.",
+        ));
+    }
+    canonicalize_boletim(&mut boletim);
+
+    let chosen_year = if let Some(yr) = requested_year {
+        boletim
+            .data
+            .iter()
+            .find(|y| y.year == yr)
+            .ok_or_else(|| ServerError::not_found("Ano letivo não encontrado no boletim."))?
+    } else {
+        boletim
+            .data
+            .iter()
+            .max_by_key(|y| y.year)
+            .ok_or_else(|| ServerError::not_found("Nenhum ano letivo encontrado no boletim."))?
+    };
+
+    let display_name: Option<String> = sqlx::query_scalar(
+        "SELECT display_name FROM account_profiles WHERE account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .flatten()
+    .filter(|s: &String| !s.trim().is_empty());
+
+    let student_name =
+        display_name.unwrap_or_else(|| prettify_student_name_from_email(&account.nsac_email));
+    let class_code = account
+        .class_code
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(chosen_year.class_code())
+        .to_string();
+
+    let meta = crate::boletim_pdf::BoletimPdfMeta {
+        student_name,
+        class_code,
+        generated_at: state.clock.now(),
+    };
+    let pdf_bytes = crate::boletim_pdf::render_boletim_pdf(chosen_year, &meta);
+    Ok((chosen_year.year, pdf_bytes))
+}
+
+fn parse_optional_year_query(pairs: &[(String, String)]) -> Result<Option<u16>, ServerError> {
+    for (k, v) in pairs {
+        if k.trim().eq_ignore_ascii_case("year") {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let parsed = trimmed
+                .parse::<u16>()
+                .map_err(|_| ServerError::invalid_params("Parâmetro 'year' inválido."))?;
+            return Ok(Some(parsed));
+        }
+    }
+    Ok(None)
+}
+
+/// GET /api/v1/nsac/boletim/pdf?year=2026 — renders the student's boletim PDF directly from DB.
+pub async fn get_boletim_pdf(
+    State(state): State<AppState>,
+    DualAuth(principal): DualAuth,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Response, ServerError> {
+    use axum::http::{HeaderValue, StatusCode, header};
+    use axum::response::IntoResponse;
+
+    let pairs = parse_query_pairs(raw_query.as_deref());
+    let target_query = parse_target_query(&pairs)?;
+    let requested_year = parse_optional_year_query(&pairs)?;
+    let target = resolve_target_account(
+        &state,
+        &principal,
+        SCOPE_NSAC_READ,
+        target_query.account_id,
+        target_query.discord_id.as_deref(),
+    )
+    .await?;
+
+    let (year, pdf) = build_boletim_pdf_from_db(&state, target.account_id, requested_year).await?;
+
+    let mut res = (StatusCode::OK, pdf).into_response();
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/pdf"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    if let Ok(v) = HeaderValue::from_str(&format!(
+        "inline; filename=\"boletim-n2sac-{year}.pdf\""
+    )) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    Ok(res)
+}
+
+/// POST /api/v1/nsac/boletim/pdf-link?year=2026 — creates a short-lived unauthenticated download URL.
+pub async fn create_boletim_pdf_link(
+    State(state): State<AppState>,
+    DualAuth(principal): DualAuth,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Response, ServerError> {
+    let pairs = parse_query_pairs(raw_query.as_deref());
+    let target_query = parse_target_query(&pairs)?;
+    let requested_year = parse_optional_year_query(&pairs)?;
+    let target = resolve_target_account(
+        &state,
+        &principal,
+        SCOPE_NSAC_READ,
+        target_query.account_id,
+        target_query.discord_id.as_deref(),
+    )
+    .await?;
+
+    let (year, pdf) = build_boletim_pdf_from_db(&state, target.account_id, requested_year).await?;
+
+    let token = hex::encode(rand::random::<[u8; 24]>());
+    {
+        let mut links = boletim_pdf_links();
+        links.retain(|_, l| l.created.elapsed() < FICHA_PDF_LINK_TTL);
+        links.retain(|_, l| !(l.account_id == target.account_id && l.year == year));
+        if links.len() >= FICHA_PDF_MAX_ENTRIES
+            && let Some(oldest_key) = links
+                .iter()
+                .min_by_key(|(_, l)| l.created)
+                .map(|(k, _)| k.clone())
+        {
+            links.remove(&oldest_key);
+        }
+        links.insert(
+            token.clone(),
+            BoletimPdfLink {
+                account_id: target.account_id,
+                year,
+                pdf: Arc::new(pdf),
+                created: Instant::now(),
+            },
+        );
+    }
+
+    Ok(crate::http::envelope::ok_json(FichaPdfLinkPayload {
+        url: format!("/api/v1/nsac/boletim/pdf-download/{token}"),
+        expires_in_secs: FICHA_PDF_LINK_TTL.as_secs(),
+    }))
+}
+
+/// GET /api/v1/nsac/boletim/pdf-download/{token}
+pub async fn download_boletim_pdf_by_token(Path(token): Path<String>) -> Response {
+    use axum::http::{HeaderValue, StatusCode, header};
+    use axum::response::IntoResponse;
+
+    let link = {
+        let mut links = boletim_pdf_links();
+        links.retain(|_, l| l.created.elapsed() < FICHA_PDF_LINK_TTL);
+        links.get(&token).map(|l| (l.year, l.pdf.clone()))
+    };
+    let Some((year, pdf)) = link else {
+        let page = "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width\">\
+            <title>n²sac</title><body style=\"font-family:sans-serif;padding:24px\">\
+            <h2>Link expirado</h2><p>Volte ao n²sac e toque em <b>Compartilhar PDF</b> novamente.</p></body>";
+        let mut res = (StatusCode::NOT_FOUND, page).into_response();
+        res.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
+        res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return res;
+    };
+
+    let mut res = (StatusCode::OK, pdf.as_ref().clone()).into_response();
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/pdf"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    if let Ok(v) = HeaderValue::from_str(&format!(
+        "inline; filename=\"boletim-n2sac-{year}.pdf\""
+    )) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    res
+}
+

@@ -366,4 +366,8 @@ impl AppState {
     pub fn classrooms(&self) -> crate::db::classrooms::ClassroomsRepo {
         crate::db::classrooms::ClassroomsRepo::new(self.db.clone())
     }
+
+    pub fn connections(&self) -> crate::db::ConnectionRepo {
+        crate::db::ConnectionRepo::new(self.db.clone())
+    }
 }

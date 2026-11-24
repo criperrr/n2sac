@@ -72,6 +72,25 @@ struct LeaderboardSqlRow {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AccountTagBadge {
+    pub slug: String,
+    pub label: String,
+    pub description: String,
+    pub color_hex: String,
+    pub priority: i16,
+}
+
+#[derive(FromRow)]
+struct AccountTagSqlRow {
+    account_id: i64,
+    slug: String,
+    label: String,
+    description: String,
+    color_hex: String,
+    priority: i16,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct LeaderboardEntry {
     pub rank: usize,
     pub account_id: i64,
@@ -89,6 +108,9 @@ pub struct LeaderboardEntry {
     pub posted_bimesters_count: i64,
     pub subjects_count: i64,
     pub total_absences: i64,
+    /// Admin-assigned platform tags and elected representative badge (empty for anonymous entries).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<AccountTagBadge>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -426,6 +448,57 @@ impl RankingRepo {
         .await?;
 
         let total_participants = rows.len();
+        let account_ids: Vec<i64> = rows.iter().map(|r| r.account_id).collect();
+        let mut tags_by_account: std::collections::HashMap<i64, Vec<AccountTagBadge>> =
+            std::collections::HashMap::new();
+
+        if !account_ids.is_empty() {
+            let tag_rows = sqlx::query_as::<_, AccountTagSqlRow>(
+                r#"
+                SELECT
+                    at.account_id,
+                    td.slug,
+                    td.label,
+                    td.description,
+                    td.color_hex,
+                    td.priority
+                FROM account_tags at
+                JOIN tag_definitions td ON td.slug = at.tag_slug
+                WHERE at.account_id = ANY($1)
+                UNION ALL
+                SELECT
+                    cr.account_id,
+                    'representative'::text AS slug,
+                    'Representante'::text AS label,
+                    'Representante eleito pela turma.'::text AS description,
+                    '#F59E0B'::text AS color_hex,
+                    20::smallint AS priority
+                FROM class_representatives cr
+                JOIN class_rooms r ON r.id = cr.room_id
+                WHERE cr.account_id = ANY($1)
+                  AND r.school_year = $2
+                ORDER BY priority ASC, label ASC
+                "#,
+            )
+            .bind(&account_ids)
+            .bind(school_year)
+            .fetch_all(&self.pool)
+            .await?;
+
+            for tr in tag_rows {
+                let entry_tags = tags_by_account.entry(tr.account_id).or_default();
+                if !entry_tags.iter().any(|t| t.slug == tr.slug) {
+                    entry_tags.push(AccountTagBadge {
+                        slug: tr.slug,
+                        label: tr.label,
+                        description: tr.description,
+                        color_hex: tr.color_hex,
+                        priority: tr.priority,
+                    });
+                }
+            }
+        }
+
         let mut leaderboard = Vec::with_capacity(total_participants);
         let mut my_rank: Option<usize> = None;
         let mut my_entry: Option<LeaderboardEntry> = None;
@@ -440,6 +513,11 @@ impl RankingRepo {
                 row.display_name.as_deref(),
                 is_me,
             );
+            let tags = if is_me || !row.hide_name {
+                tags_by_account.remove(&row.account_id).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
 
             let entry = LeaderboardEntry {
                 rank,
@@ -459,6 +537,7 @@ impl RankingRepo {
                 posted_bimesters_count: row.posted_bimesters_count,
                 subjects_count: row.subjects_count,
                 total_absences: row.total_absences,
+                tags,
             };
 
             if is_me {
@@ -624,6 +703,88 @@ pub fn avatar_path(account_id: i64, version: i64) -> String {
     format!("/api/v1/profiles/{account_id}/avatar?v={version}")
 }
 
+/// Derives a clean, human-readable official name from an institutional `@unesp.br` email,
+/// stripping trailing numeric collision suffixes (`oliveira16` -> `Oliveira`), splitting
+/// hyphenated surnames (`silva-rodrigues` -> `Silva Rodrigues`), and formatting middle initials
+/// (`walther.vb.franco` -> `Walther V. B. Franco`, `g.ullrich16` -> `G. Ullrich`).
+pub(crate) fn derive_official_name_from_email(email: &str) -> String {
+    const PREPOSITIONS: [&str; 6] = ["de", "da", "do", "dos", "das", "e"];
+    let local = email.split('@').next().unwrap_or("").trim();
+    let raw_parts: Vec<&str> = local
+        .split(['.', '_', '-'])
+        .map(|p| p.trim_end_matches(|c: char| c.is_ascii_digit()))
+        .filter(|p| !p.is_empty())
+        .collect();
+
+    if raw_parts.is_empty() {
+        return String::new();
+    }
+
+    let total = raw_parts.len();
+    let mut out: Vec<String> = Vec::with_capacity(total + 1);
+
+    for (idx, part) in raw_parts.into_iter().enumerate() {
+        let lower = part.to_lowercase();
+        let is_middle = idx > 0 && idx + 1 < total;
+        let char_count = lower.chars().count();
+
+        if is_middle && PREPOSITIONS.contains(&lower.as_str()) {
+            out.push(lower);
+            continue;
+        }
+
+        // Single-letter initial (e.g., `g` in `g.ullrich` or `leonardo.g.anjos`) -> `G.`
+        if char_count == 1 {
+            out.push(format!("{}.", lower.to_uppercase()));
+            continue;
+        }
+
+        // Two-letter consonant-only cluster (e.g., `ds` in `ds.batista`, `vb` in `walther.vb.franco`,
+        // `ls` in `thayla.ls.bitar`) -> `D. S.` / `V. B.` / `L. S.`
+        let has_vowel = lower
+            .chars()
+            .any(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 'á' | 'é' | 'í' | 'ó' | 'ú' | 'â' | 'ê' | 'ô' | 'ã' | 'õ'));
+        if char_count == 2 && !has_vowel && idx + 1 < total {
+            for ch in lower.chars() {
+                out.push(format!("{}.", ch.to_uppercase()));
+            }
+            continue;
+        }
+
+        let mut chars = lower.chars();
+        if let Some(first) = chars.next() {
+            out.push(format!("{}{}", first.to_uppercase(), chars.as_str()));
+        }
+    }
+
+    out.join(" ")
+}
+
+/// Returns `true` when the institutional email is abbreviated (`g.ullrich`, `ds.batista`),
+/// contains numeric collision suffixes (`leticia.oliveira16`), or has intermediate ambiguous
+/// structures (middle initials like `walther.vb.franco` / `leonardo.g.anjos`, or hyphenated
+/// compound surnames where inference may be incomplete). Clean `first.last@unesp.br` emails
+/// return `false` (no intrusive modal, though Google confirmation remains available in Profile).
+pub(crate) fn email_name_needs_verification(email: &str) -> bool {
+    let local = email.split('@').next().unwrap_or("").trim();
+    let parts: Vec<&str> = local.split(['.', '_', '-']).filter(|p| !p.is_empty()).collect();
+    let Some(first) = parts.first() else {
+        return true;
+    };
+    let first_clean = first.trim_end_matches(|c: char| c.is_ascii_digit());
+    if first_clean.chars().count() <= 2 {
+        return true;
+    }
+    if local.chars().any(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    // Intermediate ambiguity: middle initial(s) (1-2 chars in middle) or hyphenated/multi-part surnames
+    if local.contains('-') || parts.len() >= 3 {
+        return true;
+    }
+    parts.iter().any(|p| p.chars().count() <= 2)
+}
+
 pub(crate) fn format_student_label(
     account_id: i64,
     email: &str,
@@ -644,23 +805,10 @@ pub(crate) fn format_student_label(
         return custom.to_string();
     }
 
-    // Derive clean capitalized display name from institutional email (e.g. "gabriel.camaforte@unesp.br" -> "Gabriel Camaforte")
-    let local = email.split('@').next().unwrap_or("Aluno");
-    let pretty: Vec<String> = local
-        .split(['.', '_', '-'])
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str().to_lowercase()),
-                None => String::new(),
-            }
-        })
-        .collect();
-
-    if pretty.is_empty() {
+    let derived = derive_official_name_from_email(email);
+    if derived.is_empty() {
         format!("Aluno #{account_id}")
     } else {
-        pretty.join(" ")
+        derived
     }
 }

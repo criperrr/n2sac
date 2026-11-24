@@ -48,6 +48,17 @@ pub async fn login(
             "Empty nsac_email or nsac_password on login",
         ));
     }
+    let email_lower = email.to_ascii_lowercase();
+    let has_valid_unesp_domain = email_lower
+        .strip_suffix("@unesp.br")
+        .is_some_and(|local| !local.is_empty() && !local.contains('@') && !local.contains(char::is_whitespace));
+    if !has_valid_unesp_domain {
+        return Err(ServerError::with_user_message(
+            ErrorCode::InvalidParams,
+            "Use seu e-mail institucional da UNESP terminado em @unesp.br.",
+            "Rejected non-@unesp.br email on login",
+        ));
+    }
 
     let cookies = {
         let _permit = state.semaphore.acquire().await?;

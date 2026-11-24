@@ -12,7 +12,10 @@ use sqlx::FromRow;
 use crate::auth::{DualAuth, Principal};
 use crate::error::ServerError;
 use crate::db::profiles::{self, ProfileImage};
-use crate::db::ranking::{avatar_path, format_student_label};
+use crate::db::ranking::{
+    avatar_path, derive_official_name_from_email, email_name_needs_verification,
+    format_student_label,
+};
 use crate::db::moderation::{ModerationRepo, ReportKind, ReportOutcome, Restriction};
 use crate::db::social::{FollowEdgeStatus, RelationshipStatus};
 use crate::media::{ProfileMediaKind, sanitize_profile_image};
@@ -31,6 +34,54 @@ pub struct UserProfilePayload {
     /// Active community-moderation restrictions on the viewer's own content.
     #[serde(default)]
     pub restrictions: Vec<Restriction>,
+    /// Official full name cryptographically confirmed via Google (`@unesp.br` OIDC).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_official_name: Option<String>,
+    /// True when the institutional email looks abbreviated (e.g. `g.ullrich`, `ds.batista`)
+    /// or has numeric collision suffixes and has not yet been confirmed via Google.
+    #[serde(default)]
+    pub official_name_needs_verification: bool,
+    /// Public Google OAuth Client ID (when configured on server) so web/app can invoke GSI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_oauth_client_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VerifyGoogleNameRequest {
+    pub id_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleTokenInfoResponse {
+    email: Option<String>,
+    email_verified: Option<String>,
+    name: Option<String>,
+    given_name: Option<String>,
+    family_name: Option<String>,
+    aud: Option<String>,
+}
+
+fn configured_google_client_id() -> Option<String> {
+    std::env::var("GOOGLE_OAUTH_CLIENT_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+pub fn extract_first_name_from_email(email: &str) -> String {
+    let derived = derive_official_name_from_email(email);
+    if derived.is_empty() {
+        "Aluno".to_string()
+    } else {
+        derived
+    }
+}
+
+fn resolve_default_official_name(email: &str, verified_official_name: Option<&str>) -> String {
+    if let Some(verified) = verified_official_name.map(str::trim).filter(|s| !s.is_empty()) {
+        return verified.to_string();
+    }
+    extract_first_name_from_email(email)
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,21 +100,41 @@ struct ProfileRow {
     banner_data_url: Option<String>,
 }
 
-pub fn extract_first_name_from_email(email: &str) -> String {
-    let local = email.split('@').next().unwrap_or("").trim();
-    let first = local
-        .split(['.', '_', '-'])
-        .next()
-        .unwrap_or("")
-        .trim();
-    if first.is_empty() {
-        return "Aluno".to_string();
-    }
-    let mut chars = first.chars();
-    match chars.next() {
-        Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str().to_lowercase()),
-        None => "Aluno".to_string(),
-    }
+async fn build_user_profile_payload(
+    state: &AppState,
+    account_id: i64,
+    row: Option<ProfileRow>,
+) -> Result<UserProfilePayload, ServerError> {
+    let (email, verified_official_name): (String, Option<String>) = sqlx::query_as(
+        "SELECT nsac_email, verified_official_name FROM accounts WHERE id = $1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    let first_name = resolve_default_official_name(&email, verified_official_name.as_deref());
+    let official_name_needs_verification =
+        verified_official_name.is_none() && email_name_needs_verification(&email);
+    let restrictions = state.moderation().restrictions(account_id).await?;
+    let google_oauth_client_id = configured_google_client_id();
+
+    let (display_name, bio, avatar_data_url, banner_data_url) = match row {
+        Some(r) => (r.display_name, r.bio, r.avatar_data_url, r.banner_data_url),
+        None => (None, None, None, None),
+    };
+
+    Ok(UserProfilePayload {
+        account_id,
+        first_name,
+        display_name,
+        bio,
+        avatar_data_url,
+        banner_data_url,
+        restrictions,
+        verified_official_name,
+        official_name_needs_verification,
+        google_oauth_client_id,
+    })
 }
 
 pub async fn get_profile(
@@ -74,11 +145,6 @@ pub async fn get_profile(
         Principal::User(u) => u.account_id,
         Principal::Service(_) => return Err(ServerError::unauthorized("User session required")),
     };
-
-    let email: String = sqlx::query_scalar("SELECT nsac_email FROM accounts WHERE id = $1")
-        .bind(account_id)
-        .fetch_one(&state.db)
-        .await?;
 
     let row = sqlx::query_as::<_, ProfileRow>(
         r#"
@@ -91,28 +157,128 @@ pub async fn get_profile(
     .fetch_optional(&state.db)
     .await?;
 
-    let first_name = extract_first_name_from_email(&email);
-    let restrictions = state.moderation().restrictions(account_id).await?;
-    let payload = match row {
-        Some(r) => UserProfilePayload {
-            account_id,
-            first_name,
-            display_name: r.display_name,
-            bio: r.bio,
-            avatar_data_url: r.avatar_data_url,
-            banner_data_url: r.banner_data_url,
-            restrictions,
-        },
-        None => UserProfilePayload {
-            account_id,
-            first_name,
-            display_name: None,
-            bio: None,
-            avatar_data_url: None,
-            banner_data_url: None,
-            restrictions,
-        },
+    let payload = build_user_profile_payload(&state, account_id, row).await?;
+
+    Ok(Json(ApiSuccess {
+        success: true,
+        data: payload,
+        next_poll_hint_secs: None,
+    }))
+}
+
+pub async fn verify_google_name(
+    State(state): State<AppState>,
+    DualAuth(principal): DualAuth,
+    Json(body): Json<VerifyGoogleNameRequest>,
+) -> Result<Json<ApiSuccess<UserProfilePayload>>, ServerError> {
+    let account_id = match principal {
+        Principal::User(u) => u.account_id,
+        Principal::Service(_) => return Err(ServerError::unauthorized("User session required")),
     };
+
+    let id_token = body.id_token.trim();
+    if id_token.is_empty() || id_token.len() > 8192 {
+        return Err(ServerError::invalid_params("Token do Google inválido."));
+    }
+
+    let account_email: String = sqlx::query_scalar("SELECT nsac_email FROM accounts WHERE id = $1")
+        .bind(account_id)
+        .fetch_one(&state.db)
+        .await?;
+
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|_| ServerError::internal("Failed to build Google OIDC HTTP client"))?;
+
+    let tokeninfo_url = reqwest::Url::parse_with_params(
+        "https://oauth2.googleapis.com/tokeninfo",
+        &[("id_token", id_token)],
+    )
+    .map_err(|_| ServerError::invalid_params("Token do Google inválido."))?;
+
+    let resp = http
+        .get(tokeninfo_url)
+        .send()
+        .await
+        .map_err(|_| {
+            ServerError::internal("Não foi possível validar o token com os servidores do Google.")
+        })?;
+
+    if !resp.status().is_success() {
+        return Err(ServerError::invalid_params(
+            "Token do Google expirado ou inválido. Tente confirmar novamente.",
+        ));
+    }
+
+    let info: GoogleTokenInfoResponse = resp.json().await.map_err(|_| {
+        ServerError::internal("Resposta inválida da verificação de identidade do Google.")
+    })?;
+
+    if info.email_verified.as_deref() != Some("true") {
+        return Err(ServerError::invalid_params(
+            "O e-mail desta conta Google não está verificado.",
+        ));
+    }
+
+    if let Some(expected_aud) = configured_google_client_id()
+        && info.aud.as_deref() != Some(expected_aud.as_str())
+    {
+        return Err(ServerError::invalid_params(
+            "Token do Google emitido para outro aplicativo.",
+        ));
+    }
+
+    let token_email = info.email.as_deref().map(str::trim).unwrap_or("");
+    if !token_email.eq_ignore_ascii_case(account_email.trim()) {
+        return Err(ServerError::invalid_params(format!(
+            "Selecione sua própria conta Google institucional ({}) para confirmar o nome.",
+            account_email
+        )));
+    }
+
+    let raw_name = info
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            let g = info.given_name.as_deref().unwrap_or("").trim();
+            let f = info.family_name.as_deref().unwrap_or("").trim();
+            format!("{g} {f}").trim().to_string()
+        });
+
+    let clean_name: String = raw_name
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(80)
+        .collect();
+
+    if clean_name.chars().count() < 3 {
+        return Err(ServerError::invalid_params(
+            "A conta Google não retornou um nome completo válido.",
+        ));
+    }
+
+    sqlx::query(
+        "UPDATE accounts SET verified_official_name = $2, official_name_verified_at = NOW(), updated_at = NOW() WHERE id = $1",
+    )
+    .bind(account_id)
+    .bind(&clean_name)
+    .execute(&state.db)
+    .await?;
+
+    let row = sqlx::query_as::<_, ProfileRow>(
+        "SELECT display_name, bio, avatar_data_url, banner_data_url FROM account_profiles WHERE account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let payload = build_user_profile_payload(&state, account_id, row).await?;
 
     Ok(Json(ApiSuccess {
         success: true,
@@ -196,22 +362,11 @@ pub async fn put_profile(
     .fetch_one(&state.db)
     .await?;
 
-    let email: String = sqlx::query_scalar("SELECT nsac_email FROM accounts WHERE id = $1")
-        .bind(account_id)
-        .fetch_one(&state.db)
-        .await?;
+    let payload = build_user_profile_payload(&state, account_id, Some(row)).await?;
 
     Ok(Json(ApiSuccess {
         success: true,
-        data: UserProfilePayload {
-            account_id,
-            first_name: extract_first_name_from_email(&email),
-            display_name: row.display_name,
-            bio: row.bio,
-            avatar_data_url: row.avatar_data_url,
-            banner_data_url: row.banner_data_url,
-            restrictions: state.moderation().restrictions(account_id).await?,
-        },
+        data: payload,
         next_poll_hint_secs: None,
     }))
 }
@@ -318,6 +473,8 @@ pub struct PublicProfilePayload {
     pub followers_count: i64,
     pub following_count: i64,
     pub relationship: RelationshipStatus,
+    #[serde(default)]
+    pub connections: Vec<crate::connections::PublicConnectionDto>,
 }
 
 /// GET /api/v1/profiles/{account_id}: a classmate's public profile.
@@ -346,7 +503,12 @@ pub async fn get_public_profile(
     }
 
     let row = profiles::public_profile(&state.db, account_id).await?.ok_or_else(hidden)?;
-    let counts = state.social().follow_counts(account_id).await?;
+    let social_repo = state.social();
+    let conn_repo = state.connections();
+    let (counts, connections) = tokio::try_join!(
+        social_repo.follow_counts(account_id),
+        conn_repo.list_public_for_account(account_id),
+    )?;
     let version = row.version.unwrap_or(0);
     let display_label = format_student_label(
         account_id,
@@ -368,6 +530,7 @@ pub async fn get_public_profile(
         followers_count: counts.followers_count,
         following_count: counts.following_count,
         relationship,
+        connections,
     }))
 }
 
