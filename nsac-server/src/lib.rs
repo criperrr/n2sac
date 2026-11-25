@@ -7,6 +7,7 @@ pub mod boletim_pdf;
 pub mod config;
 pub mod connections;
 pub mod db;
+pub mod discord;
 pub mod error;
 pub mod fcm;
 pub mod http;

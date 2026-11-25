@@ -46,4 +46,5 @@ uuid = { version = "1", features = ["v4", "serde"] }
 jsonwebtoken = { version = "12", features = ["aws_lc_rs"] }
 dotenvy = "0.15"
 http-body-util = "0.1"
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
