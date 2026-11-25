@@ -34,7 +34,8 @@ docker save n2sac-server:latest | gzip | ssh -T -o LogLevel=ERROR "${REMOTE_USER
   docker compose up -d --no-deps --no-build nsac-server
 "
 
-echo "[deploy-server] Verifying /api/v1/health..."
+PUBLIC_URL="${N2SAC_PUBLIC_URL:-https://notebook-server.tailddd6bf.ts.net}"
+echo "[deploy-server] Verifying ${PUBLIC_URL}/api/v1/health..."
 sleep 3
-curl -fsS "http://${REMOTE_HOST}:3000/api/v1/health" && echo ""
+curl -fsS --max-time 10 "${PUBLIC_URL}/api/v1/health" && echo ""
 echo "[deploy-server] Done!"

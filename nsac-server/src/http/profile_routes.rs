@@ -339,10 +339,18 @@ pub async fn start_google_name_oauth(
         ServerError::invalid_params("GOOGLE_OAUTH_CLIENT_ID não configurado no servidor.")
     })?;
     let redirect_uri = google_name_callback_url()?;
-    let account_email: String = sqlx::query_scalar("SELECT nsac_email FROM accounts WHERE id = $1")
-        .bind(account_id)
-        .fetch_one(&state.db)
-        .await?;
+    let (account_email, already_verified): (String, Option<String>) = sqlx::query_as(
+        "SELECT nsac_email, verified_official_name FROM accounts WHERE id = $1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if already_verified.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+        return Err(ServerError::invalid_params(
+            "Seu nome oficial já está confirmado via Google.",
+        ));
+    }
 
     let raw_state = generate_random_token(24);
     let state_hash = sha256_hex_str(&raw_state);
