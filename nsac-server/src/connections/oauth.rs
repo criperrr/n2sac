@@ -49,6 +49,10 @@ pub fn is_oauth_configured(provider: ConnectionProvider) -> bool {
             env_non_empty("DISCORD_APPLICATION_ID").is_some()
                 && env_non_empty("DISCORD_OAUTH_CLIENT_SECRET").is_some()
         }
+        ConnectionProvider::Spotify => {
+            env_non_empty("SPOTIFY_CLIENT_ID").is_some()
+                && env_non_empty("SPOTIFY_CLIENT_SECRET").is_some()
+        }
         ConnectionProvider::Github => {
             env_non_empty("GITHUB_CLIENT_ID").is_some()
                 && env_non_empty("GITHUB_CLIENT_SECRET").is_some()
@@ -103,6 +107,25 @@ pub fn build_authorize_url(
                 q.append_pair("scope", "identify connections");
                 q.append_pair("state", state);
                 q.append_pair("prompt", "consent");
+                if let Some(ch) = code_challenge {
+                    q.append_pair("code_challenge", ch);
+                    q.append_pair("code_challenge_method", "S256");
+                }
+            }
+            Ok(url.into())
+        }
+        ConnectionProvider::Spotify => {
+            let client_id = env_non_empty("SPOTIFY_CLIENT_ID")
+                .ok_or_else(|| ServerError::invalid_params("Spotify OAuth não configurado."))?;
+            let mut url = Url::parse("https://accounts.spotify.com/authorize")
+                .map_err(|_| ServerError::internal("Invalid Spotify authorize URL"))?;
+            {
+                let mut q = url.query_pairs_mut();
+                q.append_pair("client_id", &client_id);
+                q.append_pair("redirect_uri", &redirect_uri);
+                q.append_pair("response_type", "code");
+                q.append_pair("scope", "user-read-private user-read-currently-playing");
+                q.append_pair("state", state);
                 if let Some(ch) = code_challenge {
                     q.append_pair("code_challenge", ch);
                     q.append_pair("code_challenge_method", "S256");
@@ -330,6 +353,80 @@ pub async fn complete_oauth_callback(
             };
 
             Ok(OAuthCallbackResult { primary, imported })
+        }
+        ConnectionProvider::Spotify => {
+            #[derive(Deserialize)]
+            struct SpotifyExternalUrls {
+                spotify: Option<String>,
+            }
+            #[derive(Deserialize)]
+            struct SpotifyUserMe {
+                id: String,
+                display_name: Option<String>,
+                external_urls: Option<SpotifyExternalUrls>,
+            }
+
+            let client_id = env_non_empty("SPOTIFY_CLIENT_ID")
+                .ok_or_else(|| ServerError::invalid_params("Spotify OAuth não configurado."))?;
+            let client_secret = Zeroizing::new(
+                env_non_empty("SPOTIFY_CLIENT_SECRET")
+                    .ok_or_else(|| ServerError::invalid_params("Spotify OAuth não configurado."))?,
+            );
+
+            let mut form = vec![
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", redirect_uri.as_str()),
+            ];
+            if let Some(v) = pkce_verifier {
+                form.push(("code_verifier", v));
+            }
+
+            let token_resp: OAuthTokenResponse = client
+                .post("https://accounts.spotify.com/api/token")
+                .basic_auth(client_id.as_str(), Some(client_secret.as_str()))
+                .form(&form)
+                .send()
+                .await
+                .map_err(|_| ServerError::internal("Falha ao contatar Spotify OAuth."))?
+                .error_for_status()
+                .map_err(|_| ServerError::invalid_params("Código OAuth do Spotify inválido ou expirado."))?
+                .json()
+                .await
+                .map_err(|_| ServerError::internal("Resposta inválida do Spotify OAuth."))?;
+            let access_token = Zeroizing::new(token_resp.access_token);
+
+            let user: SpotifyUserMe = client
+                .get("https://api.spotify.com/v1/me")
+                .bearer_auth(access_token.as_str())
+                .send()
+                .await
+                .map_err(|_| ServerError::internal("Falha ao buscar perfil do Spotify."))?
+                .error_for_status()
+                .map_err(|_| ServerError::internal("Spotify rejeitou a leitura do perfil."))?
+                .json()
+                .await
+                .map_err(|_| ServerError::internal("Perfil do Spotify inválido."))?;
+
+            let profile_url = user
+                .external_urls
+                .and_then(|u| u.spotify)
+                .filter(|s| s.starts_with("https://open.spotify.com/"))
+                .or_else(|| Some(format!("https://open.spotify.com/user/{}", user.id)));
+
+            let primary = VerifiedExternalAccount {
+                provider: ConnectionProvider::Spotify,
+                external_id: user.id.clone(),
+                handle: user.id,
+                display_name: user.display_name.filter(|s| !s.trim().is_empty()),
+                profile_url,
+                verification_source: VerificationSource::Oauth,
+            };
+
+            Ok(OAuthCallbackResult {
+                primary,
+                imported: Vec::new(),
+            })
         }
         ConnectionProvider::Github => {
             let client_id = env_non_empty("GITHUB_CLIENT_ID")

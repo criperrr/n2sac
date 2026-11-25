@@ -39,19 +39,9 @@ pub struct NormalizedConnection {
 }
 
 impl ConnectionProvider {
-    pub const ALL: [Self; 12] = [
-        Self::Discord,
+    pub const ALL: [Self; 2] = [
         Self::Spotify,
-        Self::Github,
-        Self::Steam,
-        Self::Twitch,
-        Self::Instagram,
-        Self::Tiktok,
-        Self::Youtube,
-        Self::X,
-        Self::Roblox,
-        Self::Linkedin,
-        Self::Letterboxd,
+        Self::Discord,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -106,7 +96,7 @@ impl ConnectionProvider {
     }
 
     pub const fn supports_oauth(self) -> bool {
-        matches!(self, Self::Discord | Self::Github | Self::Twitch | Self::Steam)
+        matches!(self, Self::Discord | Self::Spotify)
     }
 
     pub const fn supports_discord_import(self) -> bool {
