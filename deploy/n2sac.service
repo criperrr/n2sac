@@ -1,5 +1,5 @@
 [Unit]
-Description=n2sac Server Stack (PostgreSQL + nsac-server + Web + Cloudflare Tunnel)
+Description=n2sac Server Stack (PostgreSQL + nsac-server + Web)
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
@@ -10,7 +10,6 @@ RemainAfterExit=yes
 WorkingDirectory=/opt/n2sac
 TimeoutStartSec=180
 TimeoutStopSec=45
-KillMode=none
 ExecStart=/usr/bin/docker compose up -d --remove-orphans
 ExecStop=/usr/bin/docker compose stop -t 30
 ExecReload=/usr/bin/docker compose up -d --remove-orphans
