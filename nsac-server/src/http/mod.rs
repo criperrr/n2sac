@@ -63,6 +63,14 @@ pub fn build_router(state: AppState) -> Router {
             post(profile_routes::verify_google_name),
         )
         .route(
+            "/api/v1/account/verify-google-name/oauth/start",
+            post(profile_routes::start_google_name_oauth),
+        )
+        .route(
+            "/api/v1/account/verify-google-name/oauth/callback",
+            get(profile_routes::verify_google_name_oauth_callback),
+        )
+        .route(
             "/api/v1/account/connections",
             get(connection_routes::list_my_connections),
         )

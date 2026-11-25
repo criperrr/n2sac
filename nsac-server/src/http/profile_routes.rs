@@ -4,12 +4,16 @@ use std::time::{Duration, Instant};
 
 use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
+use chrono::{Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::FromRow;
+use zeroize::Zeroizing;
 
 use crate::auth::{DualAuth, Principal};
+use crate::connections::oauth::{generate_random_token, pkce_challenge_s256, public_base_url};
 use crate::error::ServerError;
 use crate::db::profiles::{self, ProfileImage};
 use crate::db::ranking::{
@@ -181,6 +185,29 @@ pub async fn verify_google_name(
         return Err(ServerError::invalid_params("Token do Google inválido."));
     }
 
+    let _clean_name = verify_and_persist_google_id_token(&state, account_id, id_token).await?;
+
+    let row = sqlx::query_as::<_, ProfileRow>(
+        "SELECT display_name, bio, avatar_data_url, banner_data_url FROM account_profiles WHERE account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let payload = build_user_profile_payload(&state, account_id, row).await?;
+
+    Ok(Json(ApiSuccess {
+        success: true,
+        data: payload,
+        next_poll_hint_secs: None,
+    }))
+}
+
+async fn verify_and_persist_google_id_token(
+    state: &AppState,
+    account_id: i64,
+    id_token: &str,
+) -> Result<String, ServerError> {
     let account_email: String = sqlx::query_scalar("SELECT nsac_email FROM accounts WHERE id = $1")
         .bind(account_id)
         .fetch_one(&state.db)
@@ -271,20 +298,221 @@ pub async fn verify_google_name(
     .execute(&state.db)
     .await?;
 
-    let row = sqlx::query_as::<_, ProfileRow>(
-        "SELECT display_name, bio, avatar_data_url, banner_data_url FROM account_profiles WHERE account_id = $1",
-    )
-    .bind(account_id)
-    .fetch_optional(&state.db)
-    .await?;
+    Ok(clean_name)
+}
 
-    let payload = build_user_profile_payload(&state, account_id, row).await?;
+#[derive(Debug, Serialize)]
+pub struct GoogleNameOAuthStartResponse {
+    pub authorize_url: String,
+}
+
+fn sha256_hex_str(input: &str) -> String {
+    let digest = Sha256::digest(input.as_bytes());
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        use std::fmt::Write;
+        let _ = write!(&mut out, "{b:02x}");
+    }
+    out
+}
+
+fn google_name_callback_url() -> Result<String, ServerError> {
+    let base = public_base_url().ok_or_else(|| {
+        ServerError::invalid_params("OAUTH_PUBLIC_BASE_URL não configurado no servidor.")
+    })?;
+    Ok(format!("{base}/api/v1/account/verify-google-name/oauth/callback"))
+}
+
+/// POST /api/v1/account/verify-google-name/oauth/start
+/// Starts a browser-based Google OIDC authorization code flow (PKCE) so Android APK users
+/// authenticate in Chrome instead of WebView (avoiding Google's `403 disallowed_useragent`).
+pub async fn start_google_name_oauth(
+    State(state): State<AppState>,
+    DualAuth(principal): DualAuth,
+) -> Result<Json<ApiSuccess<GoogleNameOAuthStartResponse>>, ServerError> {
+    let account_id = match principal {
+        Principal::User(u) => u.account_id,
+        Principal::Service(_) => return Err(ServerError::unauthorized("User session required")),
+    };
+
+    let client_id = configured_google_client_id().ok_or_else(|| {
+        ServerError::invalid_params("GOOGLE_OAUTH_CLIENT_ID não configurado no servidor.")
+    })?;
+    let redirect_uri = google_name_callback_url()?;
+    let account_email: String = sqlx::query_scalar("SELECT nsac_email FROM accounts WHERE id = $1")
+        .bind(account_id)
+        .fetch_one(&state.db)
+        .await?;
+
+    let raw_state = generate_random_token(24);
+    let state_hash = sha256_hex_str(&raw_state);
+    let verifier = Zeroizing::new(generate_random_token(32));
+    let challenge = pkce_challenge_s256(&verifier);
+    let pkce_ciphertext = state.crypto.encrypt(&verifier)?;
+    let expires_at = Utc::now() + ChronoDuration::minutes(10);
+
+    state
+        .connections()
+        .create_oauth_state(
+            &state_hash,
+            account_id,
+            "google_name",
+            Some(&pkce_ciphertext),
+            "android",
+            expires_at,
+        )
+        .await?;
+
+    let mut url = reqwest::Url::parse("https://accounts.google.com/o/oauth2/v2/auth")
+        .map_err(|_| ServerError::internal("Invalid Google OAuth URL"))?;
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("client_id", &client_id);
+        q.append_pair("redirect_uri", &redirect_uri);
+        q.append_pair("response_type", "code");
+        q.append_pair("scope", "openid email profile");
+        q.append_pair("hd", "unesp.br");
+        q.append_pair("login_hint", account_email.trim());
+        q.append_pair("prompt", "select_account");
+        q.append_pair("state", &raw_state);
+        q.append_pair("code_challenge", &challenge);
+        q.append_pair("code_challenge_method", "S256");
+    }
 
     Ok(Json(ApiSuccess {
         success: true,
-        data: payload,
+        data: GoogleNameOAuthStartResponse {
+            authorize_url: url.into(),
+        },
         next_poll_hint_secs: None,
     }))
+}
+
+fn render_google_result_html(ok: bool, title: &str, detail: &str) -> Html<String> {
+    let accent = if ok { "#10a37f" } else { "#ef4444" };
+    let safe_title = title.replace('<', "&lt;").replace('>', "&gt;");
+    let safe_detail = detail.replace('<', "&lt;").replace('>', "&gt;");
+    Html(format!(
+        r#"<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{safe_title} — n²sac</title><style>body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#0e0f12;color:#f3f4f6;font-family:system-ui,-apple-system,sans-serif;padding:24px}}.card{{max-width:400px;width:100%;background:#181a20;border:1px solid #2b2f3a;border-radius:24px;padding:28px 24px;text-align:center}}.dot{{width:52px;height:52px;border-radius:16px;background:{accent}22;color:{accent};display:grid;place-items:center;margin:0 auto 14px;font-size:26px;font-weight:800}}h1{{margin:0 0 8px;font-size:1.25rem}}p{{margin:0 0 18px;color:#9ca3af;font-size:.92rem;line-height:1.5}}.hint{{font-size:.82rem;color:#6b7280}}</style></head><body><div class="card"><div class="dot">{icon}</div><h1>{safe_title}</h1><p>{safe_detail}</p><div class="hint">Você já pode voltar para o aplicativo n²sac.</div></div></body></html>"#,
+        icon = if ok { "✓" } else { "!" },
+    ))
+}
+
+#[derive(Deserialize)]
+struct GoogleTokenExchangeResp {
+    id_token: Option<String>,
+}
+
+/// GET /api/v1/account/verify-google-name/oauth/callback
+pub async fn verify_google_name_oauth_callback(
+    State(state): State<AppState>,
+    RawQuery(raw_query): RawQuery,
+) -> Html<String> {
+    let pairs: Vec<(String, String)> = raw_query
+        .as_deref()
+        .map(|q| {
+            url::form_urlencoded::parse(q.as_bytes())
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let find_param = |name: &str| pairs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+
+    if find_param("error").is_some() {
+        return render_google_result_html(
+            false,
+            "Confirmação cancelada",
+            "Você cancelou o login com o Google. Volte ao n²sac para tentar novamente quando quiser.",
+        );
+    }
+
+    let Some(raw_state) = find_param("state").filter(|s| !s.is_empty()) else {
+        return render_google_result_html(false, "Sessão inválida", "Parâmetro de segurança ausente.");
+    };
+    let Some(code) = find_param("code").filter(|s| !s.is_empty()) else {
+        return render_google_result_html(false, "Código ausente", "O Google não retornou um código válido.");
+    };
+
+    let state_hash = sha256_hex_str(raw_state);
+    let consumed = match state
+        .connections()
+        .consume_oauth_state(&state_hash, "google_name")
+        .await
+    {
+        Ok(Some(s)) => s,
+        _ => {
+            return render_google_result_html(
+                false,
+                "Link expirado",
+                "Esta tentativa expirou. Volte ao n²sac e toque em Confirmar novamente.",
+            );
+        }
+    };
+
+    let Some(client_id) = configured_google_client_id() else {
+        return render_google_result_html(false, "Não configurado", "GOOGLE_OAUTH_CLIENT_ID ausente.");
+    };
+    let client_secret = std::env::var("GOOGLE_OAUTH_CLIENT_SECRET")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let Some(client_secret) = client_secret else {
+        return render_google_result_html(false, "Não configurado", "GOOGLE_OAUTH_CLIENT_SECRET ausente.");
+    };
+    let Ok(redirect_uri) = google_name_callback_url() else {
+        return render_google_result_html(false, "Erro de configuração", "URL de retorno inválida.");
+    };
+
+    let verifier = match consumed.pkce_verifier_ciphertext {
+        Some(ct) => state.crypto.decrypt(&ct).ok().map(Zeroizing::new),
+        None => None,
+    };
+
+    let http = match reqwest::Client::builder().timeout(Duration::from_secs(12)).build() {
+        Ok(c) => c,
+        Err(_) => return render_google_result_html(false, "Erro interno", "Falha ao contatar o Google."),
+    };
+
+    let mut form = vec![
+        ("client_id", client_id.as_str()),
+        ("client_secret", client_secret.as_str()),
+        ("code", code),
+        ("redirect_uri", redirect_uri.as_str()),
+        ("grant_type", "authorization_code"),
+    ];
+    if let Some(ref v) = verifier {
+        form.push(("code_verifier", v.as_str()));
+    }
+
+    let token_resp = match http
+        .post("https://oauth2.googleapis.com/token")
+        .form(&form)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r.json::<GoogleTokenExchangeResp>().await.ok(),
+        _ => None,
+    };
+    let Some(id_token) = token_resp.and_then(|t| t.id_token) else {
+        return render_google_result_html(
+            false,
+            "Falha ao validar com o Google",
+            "Não foi possível trocar o código de autorização. Verifique se a conta é @unesp.br e tente novamente.",
+        );
+    };
+
+    match verify_and_persist_google_id_token(&state, consumed.account_id, &id_token).await {
+        Ok(verified_name) => render_google_result_html(
+            true,
+            "Nome oficial confirmado!",
+            &format!("Seu nome foi atualizado para {verified_name}."),
+        ),
+        Err(err) => render_google_result_html(
+            false,
+            "Não foi possível confirmar",
+            err.user_message(),
+        ),
+    }
 }
 
 pub async fn put_profile(
