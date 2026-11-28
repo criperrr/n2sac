@@ -2,6 +2,7 @@ pub mod account_routes;
 pub mod auth_routes;
 pub mod compare_routes;
 pub mod connection_routes;
+pub mod dev_announcement_routes;
 pub mod envelope;
 pub mod extract;
 pub mod feedback_routes;
@@ -97,6 +98,38 @@ pub fn build_router(state: AppState) -> Router {
                 .put(account_routes::put_notification_preferences),
         )
         .route("/api/v1/classrooms/me", get(classroom_routes::get_my_room))
+        .route(
+            "/api/v1/dev-announcements",
+            get(dev_announcement_routes::list_dev_announcements).post(
+                dev_announcement_routes::create_dev_announcement
+                    .layer(DefaultBodyLimit::max(6_000_000)),
+            ),
+        )
+        .route(
+            "/api/v1/dev-announcements/{id}",
+            delete(dev_announcement_routes::delete_dev_announcement),
+        )
+        .route(
+            "/api/v1/dev-announcements/{id}/read",
+            post(dev_announcement_routes::mark_dev_announcement_read),
+        )
+        .route(
+            "/api/v1/dev-announcements/{id}/reaction",
+            post(dev_announcement_routes::toggle_dev_announcement_reaction),
+        )
+        .route(
+            "/api/v1/dev-announcements/{id}/poll/vote",
+            post(dev_announcement_routes::vote_dev_announcement_poll),
+        )
+        .route(
+            "/api/v1/dev-announcements/{id}/comments",
+            get(dev_announcement_routes::list_dev_announcement_comments)
+                .post(dev_announcement_routes::create_dev_announcement_comment),
+        )
+        .route(
+            "/api/v1/dev-announcements/comments/{comment_id}",
+            delete(dev_announcement_routes::delete_dev_announcement_comment),
+        )
         .route("/api/v1/classrooms/me/stream", get(classroom_routes::stream_my_room))
         .route("/api/v1/classrooms/me/election", get(classroom_routes::get_election))
         .route(
@@ -168,6 +201,22 @@ pub fn build_router(state: AppState) -> Router {
                 .put(compare_routes::put_ranking_preferences),
         )
         .route("/api/v1/compare", get(compare_routes::get_compare))
+        .route(
+            "/api/v1/compare/custom-analytics",
+            post(compare_routes::post_custom_analytics),
+        )
+        .route(
+            "/api/v1/compare/peer/{peer_id}",
+            get(compare_routes::get_peer_comparison),
+        )
+        .route(
+            "/api/v1/compare/classrooms",
+            get(compare_routes::get_classroom_ranking),
+        )
+        .route(
+            "/api/v1/compare/classrooms/{class_code}",
+            get(compare_routes::get_classroom_comparison),
+        )
         .route("/api/v1/students/search", get(profile_routes::search_students))
         .route("/api/v1/account/privacy", put(profile_routes::put_privacy))
         .route("/api/v1/profiles/{account_id}", get(profile_routes::get_public_profile))

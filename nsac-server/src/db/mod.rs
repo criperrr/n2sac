@@ -2,10 +2,12 @@ pub mod accounts;
 pub mod auth;
 pub mod boletim;
 pub mod connections;
+pub mod dev_announcements;
 pub mod feedback;
 pub mod moderation;
 pub mod profiles;
 pub mod ranking;
+pub mod ranking_math;
 pub mod classrooms;
 pub mod sentinel;
 pub mod snapshots;
@@ -19,11 +21,14 @@ pub use auth::{
 };
 pub use boletim::BoletimRepo;
 pub use connections::ConnectionRepo;
+pub use dev_announcements::{DevAnnouncementRepo, DevAnnouncementRow};
 pub use feedback::FeedbackRepo;
 pub use moderation::ModerationRepo;
 pub use ranking::{
-    ComparisonSummaryResponse, LeaderboardEntry, PeerComparisonDetail, RankingPreferences,
-    RankingRepo, SubjectComparisonRow,
+    ClassDescriptor, CohortHighlightItem, ComparisonSummaryResponse, CourseFamily,
+    LeaderboardEntry, Modality, MyBenchmarkSummary, PeerComparisonDetail, RankingPreferences,
+    RankingQuery, RankingRepo, RankingScope, RankingSortBy, RequesterSocialContext,
+    SubjectComparisonRow, SubjectSpotlight, YearRankingDataset,
 };
 pub use sentinel::{GradePostingEvent, NewGradePostingEvent, SentinelClassState, SentinelRepo};
 pub use snapshots::{SnapshotRecord, SnapshotRepo, compute_strong_etag};

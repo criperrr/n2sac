@@ -105,6 +105,13 @@ pub async fn login(
         .await?
         .unwrap_or(boletim);
 
+    for year_info in &canonical_boletim.data {
+        state
+            .caches
+            .invalidate_ranking_year(i32::from(year_info.year))
+            .await;
+    }
+
     let etag = compute_strong_etag(&canonical_boletim)?;
     state
         .caches

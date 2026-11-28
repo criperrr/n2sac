@@ -202,6 +202,13 @@ async fn fetch_and_persist_boletim(
         .await?
         .unwrap_or(live_boletim);
 
+    for year_info in &canonical.data {
+        state
+            .caches
+            .invalidate_ranking_year(i32::from(year_info.year))
+            .await;
+    }
+
     if let Some(code) = canonical
         .current_class_code()
         .and_then(normalize_class_code)
@@ -596,6 +603,25 @@ pub async fn create_ficha_pdf_link(
     })
     .await?
     .ok_or_else(|| ServerError::not_found("Ficha not released by the NSAC yet"))?;
+
+    // Extract INI A/B subclass anchor from the dompdf PDF (only applies to INI1..INI3).
+    if let Some(ini_ab) = crate::db::ranking::extract_ini_ab_from_pdf(&pdf) {
+        let hint_payload = serde_json::json!({
+            "class_code": ini_ab,
+            "bimester": id,
+        });
+        if let Ok(etag) = compute_strong_etag(&hint_payload) {
+            let now = chrono::Utc::now();
+            if state
+                .snapshots()
+                .upsert(target.account_id, "ficha_class_hint", &hint_payload, &etag, now)
+                .await
+                .is_ok()
+            {
+                state.caches.invalidate_all_rankings().await;
+            }
+        }
+    }
 
     let token = hex::encode(rand::random::<[u8; 24]>());
     {

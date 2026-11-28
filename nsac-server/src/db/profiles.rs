@@ -32,9 +32,13 @@ impl Visibility {
         !self.invisible && (self.named_in_ranking() || (self.discoverable && self.public_profile))
     }
 
-    /// Photo visible: shown next to the name in the ranking, or part of a visible profile.
+    /// Photo visible to non-friends: only when the student explicitly enabled `show_avatar`,
+    /// is not invisible, and is not hiding their name. Accepted friends may still view the avatar.
     pub fn avatar_visible(&self) -> bool {
-        !self.invisible && ((self.named_in_ranking() && self.show_avatar) || self.profile_visible())
+        !self.invisible
+            && self.show_avatar
+            && !self.hide_name
+            && (self.named_in_ranking() || self.profile_visible())
     }
 }
 
@@ -142,6 +146,7 @@ pub async fn image(pool: &PgPool, account_id: i64, kind: ProfileImage) -> Result
 #[derive(FromRow)]
 pub struct PublicProfileRow {
     pub nsac_email: String,
+    pub verified_official_name: Option<String>,
     pub class_code: Option<String>,
     pub ranking_display_name: Option<String>,
     pub hide_name: Option<bool>,
@@ -156,6 +161,7 @@ pub async fn public_profile(pool: &PgPool, account_id: i64) -> Result<Option<Pub
         r#"
         SELECT
             a.nsac_email,
+            a.verified_official_name,
             a.class_code,
             COALESCE(NULLIF(TRIM(rp.display_name), ''), NULLIF(TRIM(ap.display_name), '')) AS ranking_display_name,
             rp.hide_name,
@@ -225,9 +231,22 @@ mod tests {
         let shown = Visibility { show_avatar: true, ..NAMED };
         assert!(shown.avatar_visible());
         assert!(!Visibility { hide_name: true, ..shown }.avatar_visible());
-        assert!(NAMED.avatar_visible(), "visible on the accessible profile");
+        assert!(!NAMED.avatar_visible(), "hidden for non-friends when show_avatar is false");
         assert!(!Visibility { discoverable: true, ..Visibility::default() }.avatar_visible());
-        assert!(Visibility { discoverable: true, public_profile: true, ..Visibility::default() }.avatar_visible());
+        assert!(
+            !Visibility { discoverable: true, public_profile: true, ..Visibility::default() }
+                .avatar_visible(),
+            "show_avatar=false hides avatar even on public profile for non-friends"
+        );
+        assert!(
+            Visibility {
+                discoverable: true,
+                public_profile: true,
+                show_avatar: true,
+                ..Visibility::default()
+            }
+            .avatar_visible()
+        );
         assert!(!Visibility { invisible: true, ..shown }.avatar_visible());
     }
 

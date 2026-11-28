@@ -168,6 +168,7 @@ pub async fn post_representative_vote(
 ) -> Result<Response, ServerError> {
     let viewer = user_account_id(&principal)?;
     let payload = state.classrooms().cast_vote(viewer, candidate_id).await?;
+    state.caches.invalidate_all_rankings().await;
     state.realtime.publish(
         payload.room.id,
         ClassroomStreamEvent::RepresentativesChanged {
@@ -185,6 +186,7 @@ pub async fn delete_representative_vote(
 ) -> Result<Response, ServerError> {
     let viewer = user_account_id(&principal)?;
     let payload = state.classrooms().revoke_vote(viewer, candidate_id).await?;
+    state.caches.invalidate_all_rankings().await;
     state.realtime.publish(
         payload.room.id,
         ClassroomStreamEvent::RepresentativesChanged {

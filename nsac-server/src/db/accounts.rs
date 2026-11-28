@@ -7,9 +7,10 @@ use sqlx::{FromRow, PgPool};
 
 use crate::error::ServerError;
 
-pub const CTI_CLASSES: [&str; 21] = [
-    "INI1A", "INI1B", "INI2A", "INI2B", "INI3A", "INI3B", "ELI1", "ELI2", "ELI3", "MEI1", "MEI2",
-    "MEI3", "INF1", "INF2", "INF3", "ELE1", "ELE2", "ELE3", "MEC1", "MEC2", "MEC3",
+pub const CTI_CLASSES: [&str; 24] = [
+    "INI1", "INI2", "INI3", "INI1A", "INI1B", "INI2A", "INI2B", "INI3A", "INI3B", "ELI1", "ELI2",
+    "ELI3", "MEI1", "MEI2", "MEI3", "INF1", "INF2", "INF3", "ELE1", "ELE2", "ELE3", "MEC1", "MEC2",
+    "MEC3",
 ];
 
 pub fn normalize_class_code(raw: &str) -> Option<String> {

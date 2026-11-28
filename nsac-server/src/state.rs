@@ -160,6 +160,10 @@ pub struct AppCaches {
     pub service_clients: Cache<String, CachedServiceClient>,
     /// `(typer, peer)` pairs that sent a chat typing ping in the last few seconds.
     pub chat_typing: Cache<(i64, i64), ()>,
+    /// Cached per-year ranking datasets (`school_year -> Arc<YearRankingDataset>`).
+    pub ranking_datasets: Cache<i32, Arc<crate::db::ranking::YearRankingDataset>>,
+    /// Cached per-account ranking preferences (`account_id -> RankingPreferences`).
+    pub ranking_prefs: Cache<i64, crate::db::ranking::RankingPreferences>,
     auth_cache_enabled: bool,
 }
 
@@ -193,12 +197,24 @@ impl AppCaches {
             .time_to_live(Duration::from_secs(CHAT_TYPING_TTL_SECS))
             .build();
 
+        let ranking_datasets = Cache::builder()
+            .max_capacity(8)
+            .time_to_live(Duration::from_secs(300))
+            .build();
+
+        let ranking_prefs = Cache::builder()
+            .max_capacity(2_000)
+            .time_to_live(Duration::from_secs(300))
+            .build();
+
         Self {
             boletim,
             snapshots,
             user_sessions,
             service_clients,
             chat_typing,
+            ranking_datasets,
+            ranking_prefs,
             auth_cache_enabled: auth_ttl > 0,
         }
     }
@@ -268,10 +284,23 @@ impl AppCaches {
         self.service_clients.invalidate(key_hash).await;
     }
 
+    pub async fn invalidate_ranking_year(&self, school_year: i32) {
+        self.ranking_datasets.invalidate(&school_year).await;
+    }
+
+    pub async fn invalidate_all_rankings(&self) {
+        self.ranking_datasets.invalidate_all();
+    }
+
+    pub async fn invalidate_ranking_prefs(&self, account_id: i64) {
+        self.ranking_prefs.invalidate(&account_id).await;
+    }
+
     pub async fn invalidate_account_all(&self, account_id: i64) {
         self.invalidate_boletim(account_id).await;
         self.invalidate_snapshots_for_account(account_id).await;
         self.invalidate_user_sessions_for_account(account_id);
+        self.invalidate_ranking_prefs(account_id).await;
     }
 }
 

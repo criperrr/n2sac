@@ -298,6 +298,9 @@ async fn verify_and_persist_google_id_token(
     .execute(&state.db)
     .await?;
 
+    state.caches.invalidate_ranking_prefs(account_id).await;
+    state.caches.invalidate_all_rankings().await;
+
     Ok(clean_name)
 }
 
@@ -598,6 +601,9 @@ pub async fn put_profile(
     .fetch_one(&state.db)
     .await?;
 
+    state.caches.invalidate_ranking_prefs(account_id).await;
+    state.caches.invalidate_all_rankings().await;
+
     let payload = build_user_profile_payload(&state, account_id, Some(row)).await?;
 
     Ok(Json(ApiSuccess {
@@ -702,6 +708,8 @@ pub struct PublicProfilePayload {
     pub account_id: i64,
     pub is_me: bool,
     pub display_label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_name: Option<String>,
     pub class_code: String,
     pub bio: Option<String>,
     pub avatar_url: Option<String>,
@@ -722,6 +730,7 @@ pub async fn get_public_profile(
     let viewer = user_account_id(&principal)?;
     let is_me = viewer == account_id;
     let relationship = state.social().relationship(viewer, account_id).await?;
+    let vis = profiles::visibility(&state.db, account_id).await?;
     if !is_me {
         if !consume_profile_view(viewer) {
             return Err(ServerError::rate_limited(
@@ -732,7 +741,6 @@ pub async fn get_public_profile(
         if relationship.blocked_by_me || relationship.blocked_me {
             return Err(hidden());
         }
-        let vis = profiles::visibility(&state.db, account_id).await?;
         if !vis.profile_visible() && !relationship.is_friend {
             return Err(hidden());
         }
@@ -746,20 +754,26 @@ pub async fn get_public_profile(
         conn_repo.list_public_for_account(account_id),
     )?;
     let version = row.version.unwrap_or(0);
+    let hide_name = row.hide_name.unwrap_or(false);
     let display_label = format_student_label(
         account_id,
         &row.nsac_email,
-        row.hide_name.unwrap_or(false),
+        hide_name,
         row.ranking_display_name.as_deref(),
         false,
     );
+    let official_name = (!hide_name).then(|| {
+        resolve_default_official_name(&row.nsac_email, row.verified_official_name.as_deref())
+    });
+    let can_see_avatar = is_me || (!hide_name && (relationship.is_friend || vis.avatar_visible()));
     Ok(ok_json(PublicProfilePayload {
         account_id,
         is_me,
         display_label,
+        official_name,
         class_code: row.class_code.unwrap_or_else(|| "CTI".to_string()),
         bio: row.bio,
-        avatar_url: row.has_avatar.then(|| avatar_path(account_id, version)),
+        avatar_url: (row.has_avatar && can_see_avatar).then(|| avatar_path(account_id, version)),
         banner_url: row
             .has_banner
             .then(|| format!("/api/v1/profiles/{account_id}/banner?v={version}")),
@@ -992,6 +1006,8 @@ pub async fn put_privacy(
         .ranking()
         .set_privacy(account_id, body.discoverable, body.invisible)
         .await?;
+    state.caches.invalidate_ranking_prefs(account_id).await;
+    state.caches.invalidate_all_rankings().await;
     Ok(ok_json(prefs))
 }
 

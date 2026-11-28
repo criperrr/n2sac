@@ -122,4 +122,44 @@ impl SnapshotRepo {
 
         Ok(res.rows_affected())
     }
+
+    /// Checks whether at least one active, non-invisible account already has a cached
+    /// ficha-avaliacao snapshot or hint identifying an `INI{grade}[AB]` subclass anchor
+    /// (for `grade` in `1..=3`).
+    pub async fn has_ini_ab_anchor_for_grade(&self, grade: u8) -> Result<bool, ServerError> {
+        if !(1..=3).contains(&grade) {
+            return Ok(false);
+        }
+
+        let pattern = format!("INI{grade}[AB]");
+        let exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM auxiliary_snapshots s
+                INNER JOIN accounts a ON a.id = s.account_id
+                LEFT JOIN account_ranking_preferences rp ON rp.account_id = a.id
+                WHERE a.active = TRUE
+                  AND COALESCE(rp.invisible, FALSE) = FALSE
+                  AND (s.route_key LIKE 'ficha_detail_%' OR s.route_key = 'ficha_class_hint')
+                  AND s.payload_json::text ~* $1
+                  AND EXISTS (
+                      SELECT 1
+                      FROM grades g
+                      INNER JOIN subjects sub ON sub.id = g.subject_id
+                      INNER JOIN school_years sy ON sy.id = sub.school_year_id
+                      WHERE g.account_id = a.id
+                        AND sy.year = COALESCE((SELECT MAX(year) FROM school_years), EXTRACT(YEAR FROM NOW())::int)
+                        AND g.grade IS NOT NULL
+                        AND g.average_grade > 0
+                  )
+            )
+            "#,
+        )
+        .bind(&pattern)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(exists)
+    }
 }

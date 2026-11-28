@@ -13,6 +13,7 @@ use nsac_core::sentinel::compute_class_grade_hash;
 use crate::config::SentinelConfig;
 use crate::db::{
     AccountSummary, GradePostingEvent, NewGradePostingEvent, SentinelClassState, SentinelRepo,
+    compute_strong_etag,
 };
 use crate::error::ServerError;
 use crate::fcm::{FcmClient, FcmDeliveryOutcome, StudentGradeHighlight};
@@ -596,6 +597,176 @@ async fn fetch_account_boletim_with_refresh(
     }
 }
 
+fn parse_ini_grade(class_code: &str) -> Option<u8> {
+    match class_code {
+        "INI1" => Some(1),
+        "INI2" => Some(2),
+        "INI3" => Some(3),
+        _ => None,
+    }
+}
+
+/// Best-effort lightweight probe to discover an `INI{1..=3}[AB]` subclass anchor
+/// from the sentinel account's `ficha-avaliacao` PDF when none exists yet in
+/// `auxiliary_snapshots`.
+///
+/// Errors are strictly logged at `DEBUG` level and never fail the Sentinel tick.
+async fn maybe_probe_ini_ab_anchor(state: &AppState, class_code: &str, account_id: i64) {
+    let Some(grade) = parse_ini_grade(class_code) else {
+        return;
+    };
+
+    match state.snapshots().has_ini_ab_anchor_for_grade(grade).await {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(err) => {
+            tracing::debug!(
+                class_code,
+                account_id,
+                error = %err,
+                "Failed to check existing INI A/B anchor; skipping sentinel ficha probe"
+            );
+            return;
+        }
+    }
+
+    let mut cookies = match state
+        .accounts()
+        .get_decrypted_credentials(&state.crypto, account_id)
+        .await
+    {
+        Ok(Some(secrets)) if secrets.active => match secrets.cookies {
+            Some(c) => c,
+            None => return,
+        },
+        Ok(_) => return,
+        Err(err) => {
+            tracing::debug!(
+                class_code,
+                account_id,
+                error = %err,
+                "Failed to load sentinel cookies for INI A/B ficha probe"
+            );
+            return;
+        }
+    };
+
+    let expected_prefix = format!("INI{grade}");
+    for bim in 1u8..=4u8 {
+        let attempt = {
+            let permit = match state.semaphore.acquire().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    tracing::debug!(
+                        class_code,
+                        account_id,
+                        bimester = bim,
+                        error = %err,
+                        "Failed to acquire NSAC semaphore for INI A/B ficha probe"
+                    );
+                    return;
+                }
+            };
+            let res = state.nsac.fetch_ficha_avaliacao_pdf(&cookies, bim).await;
+            drop(permit);
+            res
+        };
+
+        match attempt {
+            Ok((Some(pdf), maybe_rotated)) => {
+                if let Some(rotated) = maybe_rotated {
+                    cookies = rotated;
+                    if let Err(err) = state
+                        .accounts()
+                        .update_cookies(&state.crypto, account_id, &cookies, state.clock.now())
+                        .await
+                    {
+                        tracing::debug!(
+                            class_code,
+                            account_id,
+                            error = %err,
+                            "Failed to persist rotated cookies during INI A/B ficha probe"
+                        );
+                    }
+                }
+
+                if let Some(ini_ab) = crate::db::ranking::extract_ini_ab_from_pdf(&pdf)
+                    && ini_ab.starts_with(&expected_prefix)
+                {
+                    let hint_payload = serde_json::json!({
+                        "class_code": ini_ab,
+                        "bimester": bim,
+                    });
+                    match compute_strong_etag(&hint_payload) {
+                        Ok(etag) => {
+                            let now = state.clock.now();
+                            match state
+                                .snapshots()
+                                .upsert(account_id, "ficha_class_hint", &hint_payload, &etag, now)
+                                .await
+                            {
+                                Ok(_) => {
+                                    state.caches.invalidate_all_rankings().await;
+                                    tracing::info!(
+                                        class_code,
+                                        account_id,
+                                        bimester = bim,
+                                        discovered_subclass = %ini_ab,
+                                        "Sentinel discovered INI A/B anchor from ficha-avaliacao PDF"
+                                    );
+                                }
+                                Err(err) => {
+                                    tracing::debug!(
+                                        class_code,
+                                        account_id,
+                                        bimester = bim,
+                                        error = %err,
+                                        "Failed to upsert ficha_class_hint snapshot"
+                                    );
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            tracing::debug!(
+                                class_code,
+                                account_id,
+                                bimester = bim,
+                                error = %err,
+                                "Failed to compute etag for ficha_class_hint snapshot"
+                            );
+                        }
+                    }
+                    return;
+                }
+            }
+            Ok((None, maybe_rotated)) => {
+                if let Some(rotated) = maybe_rotated {
+                    cookies = rotated;
+                    let _ = state
+                        .accounts()
+                        .update_cookies(&state.crypto, account_id, &cookies, state.clock.now())
+                        .await;
+                }
+            }
+            Err(err) => {
+                tracing::debug!(
+                    class_code,
+                    account_id,
+                    bimester = bim,
+                    error = %err,
+                    "Sentinel INI A/B ficha probe request failed"
+                );
+                if matches!(
+                    err.code,
+                    ErrorCode::NsacAuthExpired | ErrorCode::NsacUnavailable
+                ) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 fn order_sentinel_candidates(
     active_accounts: &[AccountSummary],
     preferred_id: Option<i64>,
@@ -695,6 +866,8 @@ pub async fn poll_due_classes_once(
             report.classes_errored += 1;
             continue;
         };
+
+        maybe_probe_ini_ab_anchor(state, &class_state.class_code, chosen_sentinel_id).await;
 
         report.classes_checked += 1;
         let prev_boletim = state.boletim().get_boletim(chosen_sentinel_id).await?;
@@ -956,6 +1129,10 @@ pub async fn poll_due_classes_once(
         );
     }
 
+    if report.fanout_students_updated > 0 {
+        state.caches.invalidate_all_rankings().await;
+    }
+
     Ok(report)
 }
 
@@ -1122,6 +1299,8 @@ pub async fn handle_manual_refresh_class_change(
             }
         }
     }
+
+    state.caches.invalidate_all_rankings().await;
 }
 
 pub fn spawn_sentinel_worker(

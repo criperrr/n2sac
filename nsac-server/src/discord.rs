@@ -2335,6 +2335,12 @@ impl DiscordBot {
         }
 
         let _ = self.state.boletim().upsert_boletim(account.id, &boletim).await;
+        for year_info in &boletim.data {
+            self.state
+                .caches
+                .invalidate_ranking_year(i32::from(year_info.year))
+                .await;
+        }
         if let Ok(etag) = compute_strong_etag(&boletim) {
             self.state
                 .caches
@@ -3095,6 +3101,12 @@ impl DiscordBot {
             .boletim()
             .upsert_boletim(account_id, &boletim)
             .await?;
+        for year_info in &boletim.data {
+            self.state
+                .caches
+                .invalidate_ranking_year(i32::from(year_info.year))
+                .await;
+        }
         let now = self.state.clock.now();
         if let Ok(etag) = compute_strong_etag(&boletim) {
             self.state

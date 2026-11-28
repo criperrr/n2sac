@@ -354,6 +354,12 @@ struct ClassMemberRow {
     nsac_email: String,
     ranking_display_name: Option<String>,
     avatar_version: Option<i64>,
+    opted_in: bool,
+    hide_name: bool,
+    show_avatar: bool,
+    public_profile: bool,
+    discoverable: bool,
+    invisible: bool,
 }
 
 impl ClassMemberRow {
@@ -373,7 +379,18 @@ impl ClassMemberRow {
     }
 
     fn avatar_url(&self) -> Option<String> {
-        self.avatar_version.map(|v| avatar_path(self.account_id, v))
+        let vis = crate::db::profiles::Visibility {
+            opted_in: self.opted_in,
+            hide_name: self.hide_name,
+            show_avatar: self.show_avatar,
+            public_profile: self.public_profile,
+            discoverable: self.discoverable,
+            invisible: self.invisible,
+        };
+        vis.avatar_visible()
+            .then_some(self.avatar_version)
+            .flatten()
+            .map(|v| avatar_path(self.account_id, v))
     }
 }
 
@@ -520,7 +537,13 @@ impl ClassroomsRepo {
                 a.nsac_email,
                 COALESCE(NULLIF(TRIM(ap.display_name), ''), NULLIF(TRIM(rp.display_name), '')) AS ranking_display_name,
                 CASE WHEN ap.avatar_data_url IS NOT NULL
-                     THEN EXTRACT(EPOCH FROM ap.updated_at)::bigint END AS avatar_version
+                     THEN EXTRACT(EPOCH FROM ap.updated_at)::bigint END AS avatar_version,
+                COALESCE(rp.opted_in, FALSE) AS opted_in,
+                COALESCE(rp.hide_name, FALSE) AS hide_name,
+                COALESCE(rp.show_avatar, FALSE) AS show_avatar,
+                COALESCE(rp.public_profile, FALSE) AS public_profile,
+                COALESCE(rp.discoverable, FALSE) AS discoverable,
+                COALESCE(rp.invisible, FALSE) AS invisible
             FROM accounts a
             LEFT JOIN account_ranking_preferences rp ON rp.account_id = a.id
             LEFT JOIN account_profiles ap ON ap.account_id = a.id

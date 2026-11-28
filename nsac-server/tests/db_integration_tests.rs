@@ -444,7 +444,7 @@ async fn supports_all_21_cti_classes_snapshots_sentinel_and_hint_stub() {
     let now = Utc.with_ymd_and_hms(2026, 11, 20, 12, 0, 0).unwrap();
     let cookies = NsacSessionCookies::new("x", "s", None).unwrap();
 
-    assert_eq!(CTI_CLASSES.len(), 21);
+    assert_eq!(CTI_CLASSES.len(), 24);
     let mut first_account_id = 0i64;
     for (idx, class_code) in CTI_CLASSES.iter().enumerate() {
         let acct = accounts
@@ -584,7 +584,7 @@ async fn leaderboard_cte_avoids_toast_groupby_and_preserves_avatar_version() {
     let ranking_repo = nsac_server::db::RankingRepo::new(pool.clone());
     let now = Utc::now();
 
-    let class_code = format!("TST{}", &suffix[suffix.len().saturating_sub(3)..]);
+    let class_code = format!("TST{}", &suffix[suffix.len().saturating_sub(10)..]);
     let cookies = NsacSessionCookies::new("x", "s", None).unwrap();
     let acct = accounts
         .upsert_on_login(
